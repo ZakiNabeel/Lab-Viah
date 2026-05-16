@@ -1,4 +1,4 @@
-# RishtaAI
+# Lab-Viah aka Find Wedding
 ### Where Your AI Twin Finds Your Match
 
 **Google Antigravity Hackathon 2026**  
