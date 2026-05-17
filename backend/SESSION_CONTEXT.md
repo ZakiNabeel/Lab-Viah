@@ -30,8 +30,8 @@
 
 ## 1. Current status snapshot
 
-- **Project phase:** Session 1 COMPLETE. Foundation skeleton in place; no deploys yet.
-- **Last commit:** *(not yet committed — user is deferring git linkage)*
+- **Project phase:** Session 1 COMPLETE. Foundation skeleton in place; committed locally on `backend/main`; not yet pushed; no deploys yet.
+- **Last commit:** `e7c4185` — `session 1: backend foundation (Fastify + Supabase + trace bus + SSE)` (local on `backend/main`, not pushed).
 - **Last updated:** 2026-05-17 by Session 1
 - **Days remaining until 20 May submission:** 3 (Sun → Wed EOD)
 
@@ -84,7 +84,8 @@
 
 ## 3. Quick reference — files & key paths
 
-- Repo root: `D:\Projects\lab-viah\backend\` (local working copy, not yet linked to git remote).
+- Repo root: `D:\Projects\rishtaai\` (team monorepo). Backend code lives at `D:\Projects\rishtaai\backend\`.
+- Git remote: `https://github.com/ZakiNabeel/Lab-Viah.git`. Branch: `backend/main`.
 - Authoritative spec: `MASTERPLAN.md`.
 - Antigravity wiring doc: `ANTIGRAVITY.md`.
 - Schema: `src/db/schema.sql` (apply via Supabase SQL Editor).
@@ -213,6 +214,7 @@ npm run test
 - **2026-05-17 — `demo_*` flowIds get a synthetic heartbeat on `/stream/:flowId`.** Rationale: frontend team can wire SSE against the real endpoint shape in Session 1 even before any workplan exists.
 - **2026-05-17 — `noUncheckedIndexedAccess: true` in tsconfig.** Rationale: catches `arr[i]` undefined access at compile time, which is exactly the kind of bug LLM-generated code introduces.
 - **2026-05-17 — `bodyLimit: 10 MB` on Fastify.** Rationale: accommodates base64-encoded audio chunks for STT in Session 2; reassess if abused.
+- **2026-05-17 — Backend lives under `backend/` subfolder of the team monorepo `https://github.com/ZakiNabeel/Lab-Viah`.** Frontend (Expo) gets its own top-level folder. We push to `backend/main` branch and PR into `main` at submission time.
 
 ---
 
@@ -224,12 +226,12 @@ npm run test
 ### Handoff from Session 1 → Session 2
 
 **Where the code is on disk:**
-- Local working copy: `D:\Projects\lab-viah\backend\`
-- Not yet linked to a git remote. User said they would link the real RishtaAI repo later.
-- No commits made this session (per user request).
+- Live working copy: `D:\Projects\rishtaai\backend\` (clone of `https://github.com/ZakiNabeel/Lab-Viah.git`, branch `backend/main`).
+- Last commit (local, NOT pushed): `e7c4185` — `session 1: backend foundation (Fastify + Supabase + trace bus + SSE)`. **First task next session: push this commit so the team can see it.**
+- Stale copy at `D:\Projects\lab-viah\backend\` should be deleted once you're sure the move was clean. It is not the live working copy any more.
 
 **Before doing anything in Session 2:**
-1. `cd D:\Projects\lab-viah\backend` and run `npm install`.
+1. `cd D:\Projects\rishtaai\backend` and run `npm install`.
 2. Create a Supabase project (free tier) if not done yet. Copy URL + service-role key + anon key + JWT secret into `.env`.
 3. Open Supabase SQL Editor and paste the entire contents of `src/db/schema.sql`. Run it. Confirm 6 tables exist and `pgvector` is enabled.
 4. Add `GEMINI_API_KEY` to `.env`. Verify with `curl http://localhost:3000/health/deep` — both `db.ok` and `gemini.ok` should be `true`.
