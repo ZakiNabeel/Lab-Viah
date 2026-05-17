@@ -31,7 +31,7 @@
 ## 1. Current status snapshot
 
 - **Project phase:** Session 2 COMPLETE AND VERIFIED. Onboarding + Twin Forge fully wired: 5 routes, 2 agents, STT stub w/ chip-fallback recovery, 12 scenario cards, end-to-end workplan with persisted Twin v1.0. Real Gemini + real Supabase journey runs in ~30 s and emits 71 trace events (exit-check ≥15).
-- **Last commit (Session 2):** *(filled in after the commit lands; current HEAD before this session was `5c175aa`).*
+- **Last commit (Session 2):** `f6fdd54` — `session 2: onboarding + Twin Forge — full 4-layer workplan, 5 endpoints, agents, 12 scenario cards, vitest happy path`. Pushed to `origin/backend/main`.
 - **Last updated:** 2026-05-17 (evening) by Session 2.
 - **Days remaining until 20 May submission:** ~3 (Sun evening → Wed EOD).
 
