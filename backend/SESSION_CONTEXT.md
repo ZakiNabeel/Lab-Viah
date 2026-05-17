@@ -31,7 +31,7 @@
 ## 1. Current status snapshot
 
 - **Project phase:** Session 3 COMPLETE AND VERIFIED LOCALLY (not pushed — teammate's parallel Session 3-5 work lives on `origin/backend/main`; user will reconcile). Matching subsystem fully wired: User Twin + Candidate Twin + Moderator agents, 12 candidate twins seeded, prescreen 12→5, find_matches workplan, /match/request + /match/results/:flowId + /baseline/match endpoints. End-to-end run against real Vertex + real Supabase completes in ~30 s with 40/40 dimensions scored across 5 parallel debates and 268 trace events.
-- **Last commit landed locally this session:** to be filled in after `git commit` at end of session (Session 3 work, NOT pushed). Predecessor: `fb9a573` (Session 2.5 — Vertex swap).
+- **Last commit landed locally this session:** `eb2f965` — `session 3: matching subsystem — User/Candidate Twin + Moderator + find_matches workplan + 12 candidates + baseline endpoint`. **NOT pushed** (user reconciling with teammate's parallel work on `origin/backend/main`). Predecessor: `fb9a573` (Session 2.5 — Vertex swap).
 - **Important Vertex behaviour pinned in this session:** Vertex hackathon-tier quota on project `lab-viah` cannot sustain 5-parallel × 3-calls-per-dim Pro bursts. Session 3 architecture mitigates via (a) unified 1-call-per-dim flow (replaces the 3-call user→candidate→scoring chain), (b) Flash on all per-dim and synthesis calls with `thinkingConfig.thinkingBudget=0`, (c) global concurrency semaphore cap=3 in the Gemini wrapper, (d) tight 12 s per-call timeout + 2-attempt retry with 1.2 s jitter backoff on 429s. See §5 decisions.
 - **GCP project for Vertex AI:** `lab-viah` (region `us-central1`). Unchanged from Session 2.5.
 - **Last updated:** 2026-05-17 (late evening) by Session 3.
