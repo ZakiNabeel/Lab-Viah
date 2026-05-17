@@ -21,6 +21,22 @@ const EnvSchema = z.object({
     .string()
     .transform((v) => v === 'true')
     .default('false'),
+
+  // ---- Dev OTP bypass ----
+  // When DEV_OTP_BYPASS=true and NODE_ENV !== 'production', /auth/otp/verify
+  // accepts a hardcoded phone+code pair without calling Twilio. The bypass
+  // creates (or finds) a real Supabase auth user via the admin API and returns
+  // a real, RLS-compatible Supabase JWT. The MASTERPLAN §7 API surface stays
+  // identical between dev and production — only the underlying credential
+  // verification differs. In production this flag MUST be false and Twilio
+  // (or another Supabase SMS provider) must be configured.
+  DEV_OTP_BYPASS: z
+    .string()
+    .transform((v) => v === 'true')
+    .default('false'),
+  DEV_OTP_PHONE: z.string().default('+923001234567'),
+  DEV_OTP_CODE: z.string().default('123456'),
+  DEV_OTP_PASSWORD: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -40,3 +56,10 @@ export const env: Env = loadEnv();
 
 export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
+
+// Hard fail if someone ever sets DEV_OTP_BYPASS=true in production.
+if (isProd && env.DEV_OTP_BYPASS) {
+  throw new Error(
+    'DEV_OTP_BYPASS=true is not allowed when NODE_ENV=production. Configure Twilio (or another Supabase SMS provider) and set DEV_OTP_BYPASS=false.'
+  );
+}

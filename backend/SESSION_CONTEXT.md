@@ -61,7 +61,7 @@
 - [x] `src/agents/_shared/types.ts` — `TraceEvent` union, `Dimension`, `WorkplanName`, `ApiResponse`.
 - [x] `src/agents/_shared/trace.ts` — `TraceBus` + `startTrace`/`endTrace`/`getTrace` + helpers (`obs`, `decide`, `recover`, `taskStart`, `taskEnd`). Persists to `traces` table on close.
 - [x] `src/agents/_shared/gemini.ts` — `geminiCall` with 2× primary attempts + Pro→Flash fallback + 15s timeout. Auto-emits `tool.call`/`tool.result`/`recovery` when given a TraceBus. `geminiSmokeTest()` for /health/deep.
-- [x] `src/routes/auth.routes.ts` — `POST /auth/otp/start` and `POST /auth/otp/verify` via Supabase Auth phone OTP. Upserts users row on verify.
+- [x] `src/routes/auth.routes.ts` — `POST /auth/otp/start` and `POST /auth/otp/verify` via Supabase Auth phone OTP. Includes dev-mode bypass branch (admin.createUser + signInWithPassword) so we are not blocked on Twilio. Upserts users row on verify.
 - [x] `src/routes/stream.routes.ts` — `GET /stream/:flowId` SSE. `demo_*` flowIds get a 1s heartbeat for 30s; real flowIds subscribe to the in-memory `TraceBus`.
 - [x] `src/server.ts` — Fastify entrypoint with `/health`, `/health/deep` (db + gemini), CORS, error handler.
 - [x] `tests/health.test.ts` + `tests/setup.ts` + `vitest.config.ts` — happy-path test for `/health`.
@@ -74,11 +74,11 @@
 
 ### Open questions for the user / TL
 
-- **Repo / git linkage** — user is deferring; needs to point this checkout at the real RishtaAI repo before Session 2 ends so commits stop being orphan.
-- **Supabase project** — needs to be created and `SUPABASE_*` env vars filled before Session 2 (`src/db/schema.sql` must be applied for any user/twin write to work).
-- **Gemini API key** — needs to be issued before Session 2 onboarding agent work.
+- **Repo / git linkage** — RESOLVED. Working in clone at `D:\Projects\rishtaai\` on branch `backend/main`. Commits `e7c4185` and `9c4ac26` landed locally (not yet pushed). Push deferred per user.
+- **Supabase project** — RESOLVED. Project ref `kllejrzqraqclmysdtfv`, URL `https://kllejrzqraqclmysdtfv.supabase.co`. Schema applied with RLS enabled (default-deny for anon/authenticated; service role bypasses). All 6 tables present, `pgvector` enabled.
+- **Gemini API key** — needs to be issued before Session 2 onboarding agent work. Drop into `.env` as `GEMINI_API_KEY`.
 - **GCP service account JSON** — needed for STT/TTS in Session 2; can be deferred to Session 2 start.
-- **Twilio (Supabase phone OTP provider)** — Supabase test provider works in dev. Real Twilio creds required only if we want OTP to land on a real Pakistani SIM during demo. Out of scope unless TL says otherwise.
+- **Twilio (Supabase phone OTP provider)** — DEFERRED, not cut. Supabase's UI now requires a real SMS provider to enable Phone auth (no built-in test provider any more). For now we use a dev-mode bypass (`DEV_OTP_BYPASS=true` in `.env`) that creates a real Supabase auth user via the admin API and returns a real Supabase JWT — same shape, same RLS behaviour as production. To enable real OTP for the live demo: wire Twilio in Supabase Auth → Providers → Phone, set `DEV_OTP_BYPASS=false`. Cost: Twilio trial gives ~$15 credits + free PK number. Tracked as Session 5 polish item.
 
 ---
 
@@ -215,6 +215,9 @@ npm run test
 - **2026-05-17 — `noUncheckedIndexedAccess: true` in tsconfig.** Rationale: catches `arr[i]` undefined access at compile time, which is exactly the kind of bug LLM-generated code introduces.
 - **2026-05-17 — `bodyLimit: 10 MB` on Fastify.** Rationale: accommodates base64-encoded audio chunks for STT in Session 2; reassess if abused.
 - **2026-05-17 — Backend lives under `backend/` subfolder of the team monorepo `https://github.com/ZakiNabeel/Lab-Viah`.** Frontend (Expo) gets its own top-level folder. We push to `backend/main` branch and PR into `main` at submission time.
+- **2026-05-17 — Supabase RLS enabled by default; backend uses service-role key which bypasses RLS.** Rationale: defense-in-depth — if anything ever hits Supabase with the anon key, default-deny protects user data. Mobile client never queries tables directly; everything goes through Fastify.
+- **2026-05-17 — Dev-mode OTP bypass added without changing MASTERPLAN §7 API.** `/auth/otp/start` and `/auth/otp/verify` keep the same request/response shape; when `DEV_OTP_BYPASS=true` and `NODE_ENV !== 'production'`, verify accepts a fixed phone+code pair and returns a real Supabase JWT (via `admin.createUser` + `signInWithPassword`). Production path with Twilio still works when `DEV_OTP_BYPASS=false`. Rationale: Supabase no longer ships a built-in phone test provider — we don't want to take a Twilio dependency just to develop, and the bypass is gated by `isProd` at config-load time so it can never accidentally ship.
+- **2026-05-17 — User vetoes scope cuts.** Earlier "drop Wali Mode" mitigation withdrawn. Full MASTERPLAN scope (all 8 agents, all 4 workplans, all 15 endpoints, Wali Mode included) is the target. Schedule risk acknowledged and accepted by user; mitigation moves from "cut scope" to "push harder on Sessions 2-3".
 
 ---
 
@@ -231,12 +234,24 @@ npm run test
 - Stale copy at `D:\Projects\lab-viah\backend\` should be deleted once you're sure the move was clean. It is not the live working copy any more.
 
 **Before doing anything in Session 2:**
-1. `cd D:\Projects\rishtaai\backend` and run `npm install`.
-2. Create a Supabase project (free tier) if not done yet. Copy URL + service-role key + anon key + JWT secret into `.env`.
-3. Open Supabase SQL Editor and paste the entire contents of `src/db/schema.sql`. Run it. Confirm 6 tables exist and `pgvector` is enabled.
-4. Add `GEMINI_API_KEY` to `.env`. Verify with `curl http://localhost:3000/health/deep` — both `db.ok` and `gemini.ok` should be `true`.
-5. Add `GOOGLE_APPLICATION_CREDENTIALS` pointing at a GCP service account JSON with Cloud Speech-to-Text + TTS enabled (Session 2 onboarding agent needs STT).
-6. Re-read MASTERPLAN sections 5.1, 5.2, 6.2, 8.1.
+1. **Push first.** `git -C D:\Projects\rishtaai push -u origin backend/main` so the team sees the work and the local repo isn't a single point of failure.
+2. `cd D:\Projects\rishtaai\backend` and run `npm install`.
+3. Supabase is already set up. Project ref: `kllejrzqraqclmysdtfv`. URL: `https://kllejrzqraqclmysdtfv.supabase.co`. Schema applied with RLS on. Confirm `.env` has all 4 `SUPABASE_*` keys.
+4. **Dev OTP bypass setup:** make sure `.env` has these (defaults are fine, but `DEV_OTP_PASSWORD` MUST be set):
+   - `DEV_OTP_BYPASS=true`
+   - `DEV_OTP_PHONE=+923001234567`
+   - `DEV_OTP_CODE=123456`
+   - `DEV_OTP_PASSWORD=<generate via openssl rand -base64 32>`
+5. Add `GEMINI_API_KEY` to `.env`. Verify with `curl http://localhost:3000/health/deep` — both `db.ok` and `gemini.ok` should be `true`.
+6. Add `GOOGLE_APPLICATION_CREDENTIALS` pointing at a GCP service account JSON with Cloud Speech-to-Text + TTS enabled (Session 2 onboarding agent needs STT).
+7. Smoke-test auth bypass:
+   ```bash
+   curl -s -X POST http://localhost:3000/auth/otp/start -H 'content-type: application/json' -d '{"phone":"+923001234567"}'
+   # → { "ok": true, "data": { "sent": true, "dev": true } }
+   curl -s -X POST http://localhost:3000/auth/otp/verify -H 'content-type: application/json' -d '{"phone":"+923001234567","otp":"123456"}'
+   # → { "ok": true, "data": { "access_token": "...", "user_id": "..." } }
+   ```
+8. Re-read MASTERPLAN sections 5.1, 5.2, 6.2, 8.1.
 
 **Useful entry points for Session 2 work:**
 - New agent goes in `src/agents/onboarding.agent.ts`. Use the `geminiCall(input, bus)` helper from `src/agents/_shared/gemini.ts` — it automatically traces.
@@ -281,8 +296,9 @@ These have come up and been deferred. Do not silently build them.
 | Frontend integration mismatch | mitigated for SSE | `demo_*` flowId heartbeat lets frontend wire SSE before agents exist. Full OpenAPI-style spec still due end of Session 2. |
 | Supabase free tier rate limits | open | Self-host fallback ready (out of scope unless triggered). |
 | Demo flakiness during recording | open | Pre-record hero debate, run cached version Day 5. |
-| **NEW: Schedule risk — 3 calendar days remaining** | open | MASTERPLAN §11 budgets 5 days starting Fri 15 May; we started Sun 17 May. Session 2 must compress onboarding + Twin Forge into one focused block, OR we drop Layer 4 Wali Mode from onboarding (it's already "optional" per MASTERPLAN §5.2) and reclaim ~90 min for Day 3 hero work. |
-| **NEW: Git linkage deferred** | open | User said they will link real repo later. Risk: if delayed past Session 2, we lose the ability to checkpoint work and recover from a bad edit. Raise loudly at Session 2 start. |
+| Schedule risk — 3 calendar days remaining | open, user accepts | MASTERPLAN §11 budgets 5 days starting Fri 15 May; we started Sun 17 May. User vetoed any scope cuts (2026-05-17). Mitigation: Session 2 needs to be tight on onboarding + Twin Forge with no detours; if Day 3 hero work slips, pull from Session 5 polish budget rather than dropping features. Re-evaluate at Session 3 end. |
+| Git push deferred | open | Commits `e7c4185` + `9c4ac26` are local-only on `backend/main`. If the local repo dies before Session 2's first push, we lose ~4 hours of work. Push at the very start of Session 2. |
+| Twilio not wired | open, mitigated for dev | Dev bypass (`DEV_OTP_BYPASS=true`) returns real Supabase JWTs without Twilio. For live OTP on a real Pakistani SIM during the demo, sign up for Twilio trial (~10 min, free) and flip `DEV_OTP_BYPASS=false`. Tracked as Session 5 polish item, not a scope cut. |
 
 ---
 
