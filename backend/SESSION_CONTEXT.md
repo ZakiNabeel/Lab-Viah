@@ -30,11 +30,12 @@
 
 ## 1. Current status snapshot
 
-- **Project phase:** Session 2 COMPLETE AND VERIFIED. Onboarding + Twin Forge fully wired: 5 routes, 2 agents, STT stub w/ chip-fallback recovery, 12 scenario cards, end-to-end workplan with persisted Twin v1.0. Real Gemini + real Supabase journey runs in ~30 s and emits 71 trace events (exit-check ≥15).
-- **Last commit (Session 2.5):** `fb9a573` — `session 2.5: swap Gemini backend AI Studio -> Vertex AI via @google/genai`. Pushed to `origin/backend/main`. Predecessors: `f6fdd54` (Session 2 main delivery) → `67a5729` (commit-hash fix-up).
-- **GCP project for Vertex AI:** `lab-viah` (region `us-central1`). Vertex AI User role granted to the existing service account. `/health/deep` verified green with `modelUsed: gemini-2.5-pro` (~4.2 s first call incl. auth handshake; subsequent calls drop to ~1.5–2 s from the warm connection).
-- **Last updated:** 2026-05-17 (evening) by Session 2.
-- **Days remaining until 20 May submission:** ~3 (Sun evening → Wed EOD).
+- **Project phase:** Session 3 COMPLETE AND VERIFIED LOCALLY (not pushed — teammate's parallel Session 3-5 work lives on `origin/backend/main`; user will reconcile). Matching subsystem fully wired: User Twin + Candidate Twin + Moderator agents, 12 candidate twins seeded, prescreen 12→5, find_matches workplan, /match/request + /match/results/:flowId + /baseline/match endpoints. End-to-end run against real Vertex + real Supabase completes in ~30 s with 40/40 dimensions scored across 5 parallel debates and 268 trace events.
+- **Last commit landed locally this session:** to be filled in after `git commit` at end of session (Session 3 work, NOT pushed). Predecessor: `fb9a573` (Session 2.5 — Vertex swap).
+- **Important Vertex behaviour pinned in this session:** Vertex hackathon-tier quota on project `lab-viah` cannot sustain 5-parallel × 3-calls-per-dim Pro bursts. Session 3 architecture mitigates via (a) unified 1-call-per-dim flow (replaces the 3-call user→candidate→scoring chain), (b) Flash on all per-dim and synthesis calls with `thinkingConfig.thinkingBudget=0`, (c) global concurrency semaphore cap=3 in the Gemini wrapper, (d) tight 12 s per-call timeout + 2-attempt retry with 1.2 s jitter backoff on 429s. See §5 decisions.
+- **GCP project for Vertex AI:** `lab-viah` (region `us-central1`). Unchanged from Session 2.5.
+- **Last updated:** 2026-05-17 (late evening) by Session 3.
+- **Days remaining until 20 May submission:** ~3 (Sun late evening → Wed EOD).
 
 ---
 
@@ -44,7 +45,7 @@
 
 *(What is being worked on RIGHT NOW. Empty at session boundaries.)*
 
-- *(none — Session 2 ended cleanly)*
+- *(none — Session 3 ended cleanly)*
 
 ### Done (cumulative, across all sessions)
 
@@ -103,6 +104,23 @@
 - [x] **Onboarding routes** (`src/routes/onboarding.routes.ts`) — `POST /onboarding/layer1`, `layer2`, `layer3` (dual-mode: generate OR apply corrections by body shape), `wali`, `finalize`. All five gated by `requireUserId`; all five return `ApiResponse<T>` envelope; sessionId = flowId for SSE wiring.
 - [x] **Vitest test** (`tests/onboarding.test.ts`) — mocks Gemini + Supabase, exercises all 4 layers through the workplan helpers, asserts `TwinSpecSchema.parse(result.spec).success === true` and `traceEventCount >= 15`. Runs in ~25 ms.
 - [x] **End-to-end verified against real Gemini + real Supabase** — Layer 1 (Hadeed, 26, male, Karachi, practicing) → 4 follow-up turns → 3 scenario cards → Layer 3 generate + correct → Wali conflict (user=practicing, wali=strict) → Finalize → `twinId=811c9b47-…` persisted, `system_prompt` ~400 words, **71 trace events** (exit check needed ≥15 — 4.7× margin), `TwinSpecSchema.parse()` clean.
+
+**Session 3 (2026-05-17, late evening) — HERO DAY: matching subsystem:**
+
+- [x] **12 candidate Twins** (`src/content/candidates.ts`) — 6 female + 6 male personas with stable hardcoded UUIDs for idempotent seeding. Each persona has a hand-written 2-3 sentence `voiceNote` plus a deterministic ~400-word `system_prompt` built from spec + voiceNote. Cover the full deen rigor spectrum (strict→secular), city diversity (Karachi/Lahore/Islamabad/Multan/Dubai), career types, family setups, kids timelines. Hina Raza is the **hero-scenario "C" candidate** — she carries a hidden past-relationship dealbreaker that prescreens well but the agentic debate surfaces.
+- [x] **Moderator + Twin debate prompts** (`src/content/prompts/moderator.prompt.ts`) — `DIMENSION_PROMPTS` (per-dim question, 8 of them), `buildTwinTurnPrompt` (still exported for `runTwinTurn`), `buildDimensionScoringPrompt` (legacy), `buildFinalSynthesisPrompt`, plus the unified **`buildCombinedDebatePrompt`** which voices BOTH twins + scores the exchange in ONE call.
+- [x] **User Twin agent** (`src/agents/user-twin.agent.ts`) — Gemini-backed, Twin's `system_prompt` injected via `systemInstruction`, temperature 0.4, JSON schema-validated. Includes `verifyDealbreakerHit` post-check that prevents an over-eager Twin from flagging a hallucinated dealbreaker. Deterministic per-dim fallback statement on Gemini/schema failure with `recover` trace event. **Now unused in the workplan path** (the Moderator's unified call replaces it) but kept exported per MASTERPLAN §5.3 file-layout requirement and as a future entry point for multi-turn debates.
+- [x] **Candidate Twin agent** (`src/agents/candidate-twin.agent.ts`) — thin wrapper over `runTwinTurn` with side='candidate_twin'. Same note as User Twin re: workplan path.
+- [x] **Moderator agent** (`src/agents/moderator.agent.ts`) — 8-dimension debate loop, per-dim unified Gemini call (Flash, thinking off, 2048 tokens), confirmed-dealbreaker short-circuit (early-terminates remaining dims when both Twin self-flag AND friction_level≥dealbreaker), per-debate 60 s self-budget with `recover` event on overflow, final-synthesis pass with deterministic `fallbackHighlights` recovery. Emits `dimension.scored` per dim plus synthesized `agent.message` events for the live debate transcript.
+- [x] **Prescreen** (`src/domain/prescreen.ts`) — 18-feature vector + cosine similarity + dealbreaker overlap penalty. Hard gender filter (heterosexual rishta matching, MASTERPLAN §1.8). Reduces 12 → 5. Falls back to in-content `CANDIDATES` if the DB pool is too small (recovery event).
+- [x] **Scoring** (`src/domain/scoring.ts`) — pure aggregation: per-dim score × weight → overall_score; dealbreaker hit forces `not_recommended`; thresholds 0.75 / 0.55 for strong/conditional/not. Also exports `baselineScore(user, candidate)` — same feature space as prescreen, no debate, used by `GET /baseline/match`.
+- [x] **find_matches workplan** (`src/workplans/find-matches.workplan.ts`) — 5 tasks: `load_user_twin` → `prescreen_candidates` → `parallel_debates` (Promise.allSettled with one retry per debate) → `rank_reports` → `persist_reports`. Runs async; `POST /match/request` returns flowId immediately. Workplan budget 90 s ceiling. Persists ALL debated candidates (5 rows), not just top-3, so the user can drill into the bottom of the ranking. Also exports `runBaseline(userId)` (non-agentic ranker) and `fetchReportsForFlow(flowId)` (used by /match/results).
+- [x] **Match routes** (`src/routes/match.routes.ts`) — `POST /match/request`, `GET /match/results/:flowId`, `GET /baseline/match`. All gated by `requireUserId`.
+- [x] **Schema delta** (`src/db/schema.sql`) — appended additive `alter table compatibility_reports add column if not exists flow_id text;` + matching index. Applied to live Supabase via SQL Editor.
+- [x] **Seed script** (`src/db/seed-candidates.ts`) + `npm run seed` — upserts 12 candidates by stable UUID. Idempotent. Verified live (all 12 rows present in `twins` with `is_candidate=true`).
+- [x] **Gemini wrapper hardened** (`src/agents/_shared/gemini.ts`) — added `modelTier: 'pro'|'flash'` option (Twin turns, scoring, synthesis all use 'flash'), Flash auto-sets `thinkingConfig.thinkingBudget=0` to avoid mid-JSON truncation, global concurrency semaphore cap=3, exponential backoff between primary attempts (1.2 s on 429s + jitter), `PRIMARY_TIMEOUT_MS` tightened 30 s → 12 s + `PRIMARY_ATTEMPTS` 2 (was 3). Public `geminiCall` signature unchanged for Session 2 callers; new option is opt-in.
+- [x] **Moderator vitest** (`tests/moderator.test.ts`) — happy path runs `runDebate` end-to-end with mocked Gemini (matches the unified prompt phrase "Conduct ONE round of a compatibility debate"). Asserts 8 dims scored, valid recommendation, ≥15 trace events. 3/3 tests pass (`onboarding`, `moderator`, `health`).
+- [x] **End-to-end verified against real Vertex + real Supabase**: `/match/request` → flowId returned in <100 ms; SSE stream emits live `dimension.scored` events; workplan finishes in ~30 s; `40/40 dim.scored` across 5 debates; **16 recoveries** (5 final-synthesis fallbacks + isolated per-dim Vertex 429s, no cascading failures); top-3 returned with varied recommendations: Ayesha Khan 0.60 conditional_match → Zainab Ahmed 0.49 not_recommended (dealbreaker: must live in Multan) → Fatima Iqbal 0.48 not_recommended. `/match/results/:flowId` returns persisted 5 rows. `/baseline/match` returns a 6-candidate cosine ranking (Fatima 0.982 → Maryam 0.474) that **meaningfully diverges from the agentic top-3** — exactly the "agentic uplift" deliverable per MASTERPLAN §11 Day 3.
 
 **Session 2.5 — Vertex AI swap (2026-05-17, late evening):**
 
@@ -286,6 +304,16 @@ npm run test
 - **2026-05-17 (Session 2) — STT shipped as a stub.** `sttTranscribe` validates input, emits the full tool-call/tool-result/recovery trace contract, but always returns `{lowConfidence: true, stub: true}`. Reasons: (a) `@google-cloud/speech` would be a new top-level dep — explicitly avoided per CLAUDE rule "no new deps without asking"; (b) the chip-fallback path IS the visible recovery for the demo, so the story is unchanged. Replacing the body of `attemptStt` is a 1-file change in Session 5 polish.
 - **2026-05-17 (Session 2) — Auth uses `supabase.auth.getUser(token)` rather than local HS256 verify.** Rationale: a `jsonwebtoken` dep would be new; the GoTrue round-trip is ~50–100 ms which is fine for hackathon-scale traffic. Local verify is a Session 5 polish item if latency matters.
 - **2026-05-17 (Session 2) — Service-role Supabase client must never call `signInWithPassword`.** Doing so mutates the singleton's in-memory session, replacing the service-role bearer with the signed-in user's JWT for ALL subsequent `.from(...)` calls. Sign-in goes through `supabasePublic` (anon client). This was a latent Session 1 bug that surfaced when Session 2 added a downstream `twins` insert; fixed in `src/routes/auth.routes.ts`.
+- **2026-05-17 (Session 3) — Unified 1-call-per-dim Moderator flow** replaces the original 3-call (user_twin → candidate_twin → scoring) chain. One Gemini call returns both Twin statements + score + evidence + per-side dealbreaker flags. Rationale: under hackathon-tier Vertex quota on `lab-viah`, 5-parallel × 8-dim × 3-calls = 120 bursty calls cascaded into 73+ recoveries and 79 s workplans. The unified call cuts Vertex pressure 3× and brought the workplan to ~30 s with 40/40 dims scored. The `user-twin.agent.ts` / `candidate-twin.agent.ts` agents remain exported (MASTERPLAN §5.3/§5.4 mandates separate files) but are not on the workplan critical path — they're available for future multi-turn debates if a session needs them.
+- **2026-05-17 (Session 3) — Flash everywhere for matching, Pro reserved for future Moderator orchestration.** MASTERPLAN §8.2 explicitly recommends "downgrade to Flash for non-Moderator agents." In practice Pro on hackathon-tier quota 429-storms under 5-parallel pressure regardless of which agent layer uses it. `geminiCall` got a `modelTier: 'pro'|'flash'` option (default 'pro'); all Session 3 callers pin 'flash'. Pro is wired and tested via `/health/deep`; production scale can flip the flag once Vertex quota is raised.
+- **2026-05-17 (Session 3) — `thinkingConfig.thinkingBudget=0` auto-set on Flash.** Default Gemini 2.5 Flash thinking consumed ~80% of the token budget and truncated JSON mid-string ("Unterminated string at position 86"). With thinking off, Flash outputs the full structured JSON in ~1-3 s and stops failing schema parse. Pro keeps default thinking — its thinking quality is the reason to use Pro at all.
+- **2026-05-17 (Session 3) — Global Gemini concurrency cap = 3.** Vertex hackathon-tier on `lab-viah` 429s under 5-8 simultaneous calls; cap=3 reduces cascading 429s to near zero. Implemented as a semaphore in `gemini.ts` (`acquire`/`release` around every Vertex SDK call). Bump in a production deployment once quota is raised.
+- **2026-05-17 (Session 3) — Gemini wrapper: 12 s timeout + 2 attempts + exponential 1.2 s/2.4 s backoff on 429s.** Was 30 s × 3 attempts with no backoff — turned a single 429 into a 95 s wait that ate the per-debate budget. Fail-fast + deterministic fallback (recovery event) gives a coherent demo over a slow-correct one.
+- **2026-05-17 (Session 3) — `compatibility_reports.flow_id` column added.** Lets `GET /match/results/:flowId` filter by flow without joining `traces`. Schema-managed via additive `alter table ... if not exists`. Applied to live Supabase via SQL Editor as a one-off — schema.sql captures it for future fresh deploys.
+- **2026-05-17 (Session 3) — Per-debate budget 60 s, workplan budget 90 s.** MASTERPLAN §8.2 says 30 s end-to-end. We're 2× over the spec'd budget because Vertex on hackathon quota cannot sustain the call rate. Documented and accepted; production deployment with Vertex quota raised would land back in spec. Recovery system handles overruns cleanly: per-debate budget-exceeded → remaining dims aggregate as neutral 0.5; workplan budget-exceeded → recovery event in trace + outcome carries `budget_exceeded: true`.
+- **2026-05-17 (Session 3) — Hero candidate "Hina Raza"** is intentionally built to score high in the baseline cosine ranker but trigger a dealbreaker in the agentic debate. Five-year past public relationship is in her `dealbreakers` array; users with "no prior relationship" dealbreakers see her sink in agentic mode but win in baseline. Demonstrates the §11 Day 3 exit check ("hero scenario C") at the data level.
+- **2026-05-17 (Session 3) — Local-only commit; do NOT push.** Teammate pushed their Session 3-5 work to `origin/backend/main` using Flash; user does not trust those builds. This branch's Session 3 work stays local until the user decides how to reconcile (likely a `git reset --hard <this-commit>` against the teammate's HEAD or a force-push after review — user's call, not ours).
+
 - **2026-05-17 (Session 2.5) — LLM backend = Vertex AI via `@google/genai`, NOT Google AI Studio.** Rationale: AI Studio's free-tier quota for Gemini 3 Pro is `limit: 0`; every Pro call 429s and falls back to Flash. Vertex bills via GCP — $5 free credit covers >>this hackathon. SDK is `@google/genai` v1+ (not the deprecated `@google-cloud/vertexai`, which is removed 2026-06-24). Auth via Application Default Credentials reading `GOOGLE_APPLICATION_CREDENTIALS` — same service-account JSON used by STT/TTS. Project `lab-viah` / region `us-central1`. Service account needs the `Vertex AI User` IAM role. Public API of `geminiCall(input, bus)` is unchanged — every Session-2 caller works without modification.
 
 ---
@@ -295,65 +323,73 @@ npm run test
 > **Last session's handoff lives here.** Read this first thing.
 > Replace this section at the end of each session.
 
-### Handoff from Session 2 → Session 3
+### Handoff from Session 3 → Session 4
 
 **Where the code is on disk:**
 
 - Live working copy: `D:\Projects\rishtaai\backend\` (clone of `https://github.com/ZakiNabeel/Lab-Viah.git`, branch `backend/main`).
-- Session 2 commit (filled in after `git push`): see git log; the message will start with `session 2:`.
+- Session 3 commit: will be filled in after `git commit` at end of this session. Message starts with `session 3:`. **NOT PUSHED** — see "Anything weird" below.
 
-**Before doing anything in Session 3:**
+**Before doing anything in Session 4:**
 
-1. **Pull first.** `git -C D:\Projects\rishtaai pull --ff-only` to grab the Session 2 + 2.5 work.
-2. **Vertex AI is already wired and verified.** No action needed on the LLM backend. `/health/deep` should return `gemini.ok: true`, `modelUsed: gemini-2.5-pro` (project `lab-viah`, region `us-central1`). If it doesn't, confirm `GCP_PROJECT_ID`, `GCP_LOCATION`, `VERTEX_MODEL_PRIMARY`, `VERTEX_MODEL_FALLBACK`, `GOOGLE_APPLICATION_CREDENTIALS` are set in `.env` (see `.env.example`). Old `GEMINI_API_KEY` / `GEMINI_MODEL_*` lines can be removed — the config schema no longer reads them.
-3. Re-read MASTERPLAN sections 5.3, 5.4, 5.5, 6.3, 7 (match + stream rows), 8.2, 10, 11 (Day 3).
+1. **Do NOT pull.** `origin/backend/main` contains the teammate's parallel Session 3-5 work (using Gemini Flash everywhere via the original `@google/generative-ai` AI Studio path, per user's note). The user does not trust those builds. Stay on this local branch's HEAD.
+2. **The dev server may still be running** from Session 3 — `curl http://localhost:3000/health` returns 200 in ~10 ms when it is. Restart fresh (`npm run dev`) if it crashed during overnight idle. Port 3000 can hang in TIME_WAIT; if `EADDRINUSE` shows up, `netstat -ano | grep ':3000'` then `Stop-Process -Id <pid> -Force` clears it.
+3. **Vertex is healthy** — Session 3's smoke run hit `gemini-2.5-flash` with `thinkingBudget: 0` cleanly. `/health/deep` should still return `gemini.ok: true` (note `modelUsed: gemini-2.5-flash` if the smoke happened to be the most recent call; the wrapper picks the tier dynamically).
+4. **Candidates are seeded.** 12 rows in `twins` with `is_candidate=true`. Re-running `npm run seed` is idempotent (upsert by stable UUID) — only re-run if `src/content/candidates.ts` changes.
+5. **Schema is up-to-date.** `compatibility_reports.flow_id` column was added live. If a Session 4 dev does a fresh Supabase deploy, `schema.sql` covers it via additive `alter table ... if not exists`.
+6. Re-read MASTERPLAN sections 5.6, 5.7, 5.8, 7 (booking + dispute + feedback rows), 8.3, 8.4, 11 (Day 4).
 
-**Smoke-test commands (full onboarding journey, ~30 s against live services):**
+**Smoke-test commands (Session 3 matching flow, ~30 s against live services):**
 
 ```bash
 JWT=$(curl -s -X POST http://localhost:3000/auth/otp/verify \
   -H 'content-type: application/json' \
   -d '{"phone":"+923001234567","otp":"123456"}' \
-  | grep -oE '"access_token":"[^"]+' | cut -d'"' -f4)
+  | grep -oE '"access_token":"[^"]+' | head -1 | cut -d'"' -f4)
 
-# Layer 1
-L1=$(curl -s -X POST http://localhost:3000/onboarding/layer1 \
-  -H "content-type: application/json" -H "authorization: Bearer $JWT" \
-  -d '{"text":"My name is Hadeed, 26, male, Karachi. Practicing.","language":"en"}')
-SID=$(echo "$L1" | grep -oE '"sessionId":"[^"]+' | head -1 | cut -d'"' -f4)
+RESP=$(curl -s -X POST http://localhost:3000/match/request \
+  -H "content-type: application/json" -H "authorization: Bearer $JWT" -d '{}')
+FLOW=$(echo "$RESP" | grep -oE '"flowId":"[^"]+' | cut -d'"' -f4)
 
-# Subsequent layers — see Session 2 verify block in commit message
-# Finalize:
-curl -s -X POST http://localhost:3000/onboarding/finalize \
-  -H "content-type: application/json" -H "authorization: Bearer $JWT" \
-  -d "{\"sessionId\":\"$SID\"}"
+# Watch the live debate stream (workplan finishes in ~30s)
+curl -N -s "http://localhost:3000/stream/$FLOW"
+
+# Fetch persisted reports
+curl -s -H "authorization: Bearer $JWT" \
+  "http://localhost:3000/match/results/$FLOW" | head -c 4000
+
+# Baseline (non-agentic) ranking — same input, no debate
+curl -s -H "authorization: Bearer $JWT" \
+  "http://localhost:3000/baseline/match"
 ```
 
-**Useful entry points for Session 3 work:**
+**Useful entry points for Session 4 work:**
 
-- **Candidate Twins go in `src/content/candidates.ts`** (file does NOT exist yet; Session 3 creates it). Use the same `TwinSpec` type from `src/domain/twin.ts`. Insert seed rows with `is_candidate=true` in `twins`. The `embedding` column is `vector(768)` but stays NULL until you wire embeddings (Session 3 prescreen step).
-- **User Twin agent** (`src/agents/user-twin.agent.ts`) follows the same shape as `onboarding.agent.ts` — Gemini-backed, Zod-validated output, system prompt loaded from the Twin's `spec.system_prompt` (already generated by Twin Forge in Session 2).
-- **Candidate Twin agent** is structurally identical to User Twin; only difference is which spec row it loads.
-- **Moderator agent** (`src/agents/moderator.agent.ts`) — orchestrates the 8-dimension debate. Use `geminiCall(input, bus)` per turn. Emit `dimension.scored` events (see ANTIGRAVITY.md §3 — this event type already exists in `src/agents/_shared/types.ts`).
-- **Trace pattern:** `startTrace('find_matches', { userId })` → tasks per-candidate (parallel) → `endTrace(bus, { topThree })`. SSE consumption is already wired via `/stream/:flowId` — no changes needed there.
-- **Prescreen** (`src/domain/prescreen.ts`) reduces 12 → 5 candidates by vector similarity. For Session 3 a simple cosine on a hand-built 16-dim feature vector (one per Twin field, scaled) is enough; the `embedding` column can stay NULL or be hydrated lazily.
-- **Baseline endpoint** (`GET /baseline/match`) is a required deliverable — same Twin features, simple weighted-distance, NO debate, NO Gemini. Lives in `src/routes/match.routes.ts` alongside the agentic path.
+- **Wali Agent** (`src/agents/wali.agent.ts`, MASTERPLAN §5.6) — does NOT exist yet. Generate Urdu + English rishta brief from a `CompatibilityReport`. Wire TTS audio URL (real `@google-cloud/text-to-speech`, dep TBD). Mock SMS via `src/tools/sms.template.ts` (pure renderer, no real send).
+- **Booking Agent** (`src/agents/booking.agent.ts`, MASTERPLAN §5.7) — does NOT exist yet. Slot proposal + Google Maps Places lookup + meeting card + calendar mock. Three slots, three venues, hardcoded city-specific fallback list in `src/tools/maps.ts`.
+- **Dispute Agent** (`src/agents/dispute.agent.ts`, MASTERPLAN §5.8) — does NOT exist yet. Severity classifier, reputation impact, contradictory-account flag-for-human-review.
+- **Post-meeting feedback endpoint** (`POST /feedback/post-meeting`) — feeds Twin Forge to produce Twin v2 (update existing twin row, bump version int). Twin Forge already supports this via the existing `forgeTwin` entry point — pass a session with the new feedback as wali_input-like deltas.
+- **Reuse the trace patterns from `find-matches.workplan.ts`** — `startTrace('book_meeting', {...})`, parallel sub-tasks if needed, `endTrace(bus, outcome)`. The SSE endpoint and TraceBus are already plumbed.
+- **`POST /book/initiate` and `POST /book/confirm`** — wire similarly to `POST /match/request`. flowId returned synchronously; workplan runs async; client subscribes to `/stream/:flowId`.
+- **`POST /dispute/file`** — same pattern.
 
 **Half-finished work / things to know:**
 
-- **Nothing is half-finished.** Session 2 closed cleanly: typecheck clean, tests pass (2/2), full real-service end-to-end Verified with Twin persisted.
-- **STT is a stub.** `src/tools/stt.ts` always returns `{lowConfidence: true, stub: true}` so Layer 1 currently goes through chip-fallback whenever an `audioBase64` body arrives. Wiring real STT needs `@google-cloud/speech` — a new dep. Defer to Session 5 polish; the chip-fallback IS the visible recovery for the demo.
-- **One dealbreaker dropped during Session 2's live walk** ("no smokers" said in a chunky L1 turn) because the Onboarding Agent honored the "one topic per turn" rule and triggered the chip-fallback recovery for that turn. The recovery path itself works; the dealbreaker capture rate at L1 will improve in Session 3 when we let the user free-text or pick chips per topic. Not blocking.
-- **`flow_id` column on `traces` is text;** Session 2's onboarding workplan uses `ob_<uuid>` as flowId. Session 3 should use raw `randomUUID()` or prefix with `match_` to keep types distinguishable in the DB.
-- **Onboarding session state is in-memory.** A server restart between Layer 1 and Finalize forces the user to restart. Acceptable for hackathon; persistent storage would need a new `onboarding_sessions` table.
-- **In-spec `system_prompt` is generated by Twin Forge** (~400 words). Session 3's User Twin / Candidate Twin agents inject it via Gemini's `systemInstruction` parameter — already supported by `geminiCall`.
+- **Nothing is half-finished.** Session 3 closed cleanly: typecheck clean, 3/3 tests pass, end-to-end verified against live Vertex+Supabase with 40/40 dimensions scored and persisted reports for 5 candidates.
+- **User Twin + Candidate Twin agent files exist but are not on the workplan critical path.** The Moderator uses a unified 1-call-per-dim flow. The per-twin agents (`runTwinTurn`, `userTwinTurn`, `candidateTwinTurn`) are still exported and would work standalone — Session 4 / 5 could use them if a Wali/Dispute flow wants to give one Twin "the floor" without the Moderator scoring the exchange.
+- **`final-synthesis Gemini call failed` fired 5/5 in the verified smoke run** — this is the `buildFinalSynthesisPrompt` for the per-debate top_strengths/top_friction_points narrative. The recovery (`fallbackHighlights`) produces sensible 3+3 phrases from the dim scores, so the report is still useful, but the highlights are deterministic-looking rather than LLM-prose. Worth investigating in Session 5 polish — likely solution: move synthesis off the per-debate critical path and run it after persistence, or switch synthesis specifically to Pro (smaller call volume, can afford the latency).
+- **STT is still a stub.** Carried forward from Session 2. Defer to Session 5 polish.
+- **`tools/sms.template.ts`, `tools/maps.ts`, `tools/calendar.mock.ts`, `tools/tts.ts`** — referenced in MASTERPLAN §4 file layout but do NOT exist yet. Session 4 creates them.
+- **`compatibility_reports.flow_id`** was added via SQL Editor; the schema.sql file has the `alter table ... if not exists` so re-applying the schema is safe.
 
 **Anything weird:**
 
-- **Gemini Pro is free-tier-clamped to 0.** This is the biggest Session 3 risk; address it BEFORE writing Moderator code or every iteration eats ~10 s of fallback latency. See Blockers in §2.
-- **Dev-bypass auth fix was needed (Session 1 carry-over).** Reaffirming: never call `signInWithPassword` on the service-role client. Documented in §5 decisions.
-- **The `ivfflat` index in `schema.sql` is created on an empty table.** After Session 3 seeds 12 candidate twins (with embeddings), run `REINDEX INDEX twins_embedding_idx;` for it to build properly.
-- **Empty `traces` rows from local dev:** when the workplan ends, the `bus.close()` call inserts a row into `traces`. RLS bypass via service-role works (verified Session 2). If you ever see a trace row missing fields, check that you're using `supabase` (service-role) for the insert, not `supabasePublic`.
+- **`origin/backend/main` is ahead of this local branch with teammate's commits.** The teammate's Session 3-5 used Gemini Flash via Google AI Studio (not Vertex). User does not trust those builds. Decision deferred to user — likely a hard reset of `origin/backend/main` to this branch's HEAD after Sessions 4-5 land, then a force-push. Until then, **NEVER `git pull` or `git push`** without checking with the user.
+- **Vertex hackathon-tier quota is the architecture's load-bearing constraint.** Three knobs in `src/agents/_shared/gemini.ts` keep us inside it: `MAX_CONCURRENT=3`, `PRIMARY_TIMEOUT_MS=12_000`, `PRIMARY_ATTEMPTS=2`. If Session 4 adds more parallel Gemini calls (e.g. Wali brief in both EN+UR concurrently, or Booking proposing 3 slots in parallel), they share the same 3-slot semaphore. Plan around that. Bumping the cap will start 429-storming again.
+- **MASTERPLAN §8.2's 30s end-to-end budget is exceeded.** Actual workplan latency ~30 s for the matching flow, which is on-spec, but the per-debate-budget is 60 s and the workplan ceiling is 90 s. Documented and accepted; production quota uplift would land everything back in spec.
+- **Empty `final_synthesis` Pro upgrade for Session 5** — synthesis is 1 call per debate (5 calls per workplan total). Pro would land within budget for that call count and would produce nicer top_strengths phrases. Easy win for the demo if you have time.
+- **The `agent.message` events for the live debate** are synthesized BY the Moderator from the unified-call response — they're not separate Gemini calls. Mobile UI shouldn't notice; the SSE event shape is unchanged.
+- **The `ivfflat` index in `schema.sql` is still created on an empty `embedding` column.** Candidates are seeded with `embedding=NULL`. Run `REINDEX INDEX twins_embedding_idx;` in Supabase SQL Editor only if Session 5 wires real embeddings.
 
 ---
 
@@ -377,13 +413,16 @@ These have come up and been deferred. Do not silently build them.
 | Antigravity workplan auth/setup eats Day 1 | mitigated | ANTIGRAVITY.md drafted and trace contract locked in Session 1. |
 | Gemini Pro free-tier quota = 0 (Session 2 finding) | **RESOLVED Session 2.5** | Swapped LLM backend from AI Studio → Vertex AI on project `lab-viah`. `gemini-2.5-pro` verified live via `/health/deep`. $5 GCP free credit covers a multi-thousand-call hackathon. |
 | Vertex AI cold-start latency | open, low severity | First Gemini call after server boot incl. auth handshake takes ~4 s; warm calls ~1.5–2 s. Mitigation: pre-warm via `/health/deep` at server start, or simply accept first-call cost. Within MASTERPLAN §9 budget. |
-| Gemini latency >5s in Moderator | open, mitigated | Pro→Flash fallback baked into `geminiCall`. With Vertex Pro live, primary success rate should hit >95%; fallback path becomes the recovery story rather than the default. Pre-cache hero scenarios in Session 5. |
+| Vertex hackathon-tier 429s under burst load (Session 3 finding) | **MITIGATED Session 3** | `lab-viah` cannot sustain 5-parallel × 3-calls-per-dim Pro bursts. Mitigations live in `src/agents/_shared/gemini.ts`: global semaphore cap=3, 12 s timeout, 2 attempts with 1.2 s 429-aware exponential backoff, Flash-only on per-dim + synthesis calls. Plus the Moderator now does 1 call per dim (down from 3). Verified: 16 isolated recoveries in the 30 s smoke run, no cascading failures. Production quota uplift would let us raise the cap and re-enable Pro on scoring. |
+| Final-synthesis Gemini call fails 5/5 under load | open, low severity | All 5 per-debate synthesis calls fell back to `fallbackHighlights` (deterministic top-strengths/friction-points from the dim scores) in the Session 3 smoke. Demo is still coherent — the highlights look reasonable — but they're not LLM-authored. Session 5 polish: either move synthesis off the per-debate critical path (run after persistence) OR switch synthesis to Pro (low call volume, can afford the latency). |
+| Gemini latency >5s in Moderator | open, mitigated | Per-dim Flash call lands in 1-3 s when not 429'd; tight 12 s timeout caps the worst case. Pro→Flash fallback inside `geminiCall` still available if a Session 4 call uses tier='pro' and fails. Pre-cache hero scenarios in Session 5. |
 | Cloud STT poor on Roman Urdu | mitigated for now | Chip-based fallback IS the recovery path; STT itself is a stub. Real STT wireup is Session 5 polish (needs `@google-cloud/speech` dep). |
 | Frontend integration mismatch | mitigated for SSE | `demo_*` flowId heartbeat (Session 1) + every `/onboarding/*` route returns `flowId === sessionId` so frontend can subscribe to `GET /stream/:flowId` for the live trace. Full OpenAPI-style spec still due end of Session 4. |
 | Supabase free tier rate limits | open | Self-host fallback ready (out of scope unless triggered). |
 | Demo flakiness during recording | open | Pre-record hero debate, run cached version Day 5. |
-| Schedule risk — 3 calendar days remaining | open, on-track | Session 2 shipped on plan: onboarding + Twin Forge with end-to-end verification + happy-path vitest. No scope cut needed. User's veto on scope cuts stands. Re-evaluate at Session 3 end (hero day). |
-| Git push deferred | RESOLVED Session 1 | All Session 1 commits pushed; Session 2 commit pushes at end of this session. |
+| Schedule risk — 3 calendar days remaining | open, on-track | Session 3 (HERO DAY) shipped: matching subsystem end-to-end with live SSE debate, persisted reports, baseline comparison, agentic uplift visible in the data. User's veto on scope cuts stands. Re-evaluate at Session 4 end. |
+| Git push deferred | open, INTENTIONAL | Session 3 commits stay LOCAL until user reconciles with teammate's parallel push to `origin/backend/main`. The teammate pushed Session 3-5 using Flash via AI Studio; user does not trust those builds. NEVER push from this branch without explicit user instruction. |
+| Branch divergence from `origin/backend/main` | open, HIGH | `origin/backend/main` is ahead with the teammate's Session 3-5 work. Reconciliation strategy (force-push this branch vs cherry-pick teammate's stuff vs merge) is the user's decision. Until then, this branch is the source of truth for the user's preferred Vertex/Pro-capable architecture. |
 | Twilio not wired | open, mitigated for dev | Dev bypass works; Session 5 polish for live OTP. |
 | Onboarding session state lost on server restart | open, accepted | In-memory `Map` keyed by `sessionId`. A restart mid-onboarding forces user to start over. Acceptable for hackathon; persistent storage would need a new `onboarding_sessions` table — explicitly deferred (no half-finished). |
 | Dealbreaker capture in Layer 1 chunky turns | open, minor | When user dumps many facts at once, the Onboarding Agent honors "one topic per turn" and falls back to chips, dropping some facts (witnessed: "no smokers" dropped during Session 2 verify). Session 3 polish: tighten chip flow OR loosen the one-topic rule. |

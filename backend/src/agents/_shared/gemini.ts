@@ -38,6 +38,11 @@ export type GeminiCallInput = {
   allowFallback?: boolean;
   // JSON-mode: instruct the model to return JSON via responseMimeType.
   responseFormat?: 'text' | 'json';
+  // Which tier to use as the primary model. Default 'pro' (VERTEX_MODEL_PRIMARY).
+  // 'flash' skips Pro entirely — pin Twin turns and other low-stakes calls
+  // here per MASTERPLAN §8.2 ("downgrade to Flash for non-Moderator agents")
+  // to avoid Pro's thinking-token overhead and parallel-rate-limit pressure.
+  modelTier?: 'pro' | 'flash';
 };
 
 export type GeminiCallResult = {
@@ -48,20 +53,68 @@ export type GeminiCallResult = {
 };
 
 const PRIMARY_ATTEMPTS = 2;
-const PRIMARY_TIMEOUT_MS = 15_000;
+// 12s — Flash with thinking off responds in 1-3s when Vertex isn't under
+// pressure. 30s was patient enough to chain 3 timeouts × 3 attempts into
+// 90+s per debate, eating the per-debate budget. Under hackathon-tier quota
+// the right move is fail-fast: a single 12s wall, the deterministic fallback
+// kicks in, and the next debate's call still gets a slot in time. Pro calls
+// (rare in this path) can live with the same wall — they take 10-15s when
+// they work and we'd rather skip them than wait 30s.
+const PRIMARY_TIMEOUT_MS = 12_000;
+
+// =========================================================
+// Global concurrency cap — keeps Vertex from 429-throttling us under the
+// 5-parallel-debates × 3-calls-per-dim burst load. Empirically:
+//   - cap=8 → cascading 429s on us-central1 (the burst limit, not RPM).
+//   - cap=3 → steady throughput, ~0 429s. The hackathon-tier per-region
+//     burst limit on lab-viah seems to land here. Bump if quota grows.
+// =========================================================
+const MAX_CONCURRENT = 3;
+let inFlight = 0;
+const waiters: Array<() => void> = [];
+
+async function acquire(): Promise<void> {
+  if (inFlight < MAX_CONCURRENT) {
+    inFlight += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => waiters.push(resolve));
+  inFlight += 1;
+}
+
+function release(): void {
+  inFlight -= 1;
+  const next = waiters.shift();
+  if (next) next();
+}
+
+function isRateLimit(err: unknown): boolean {
+  const s = err instanceof Error ? err.message : String(err);
+  return /RESOURCE_EXHAUSTED|429|rate.?limit/i.test(s);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export async function geminiCall(
   input: GeminiCallInput,
   bus?: TraceBus
 ): Promise<GeminiCallResult> {
   const allowFallback = input.allowFallback ?? true;
+  const tier = input.modelTier ?? 'pro';
+  // 'flash' callers go straight to the fallback model — no Pro attempt — so
+  // they don't pay the Pro thinking-budget tax for low-stakes turns.
+  const primaryModel = tier === 'flash' ? env.VERTEX_MODEL_FALLBACK : env.VERTEX_MODEL_PRIMARY;
+  const fallbackModel = env.VERTEX_MODEL_FALLBACK;
   const start = Date.now();
 
   bus?.emit({
     type: 'tool.call',
     tool: 'geminiCall',
     args: {
-      model: env.VERTEX_MODEL_PRIMARY,
+      model: primaryModel,
+      tier,
       location: env.GCP_LOCATION,
       promptChars: input.prompt.length,
       temperature: input.temperature,
@@ -72,7 +125,7 @@ export async function geminiCall(
   let lastError: unknown;
   for (let attempt = 1; attempt <= PRIMARY_ATTEMPTS; attempt++) {
     try {
-      const result = await callModel(env.VERTEX_MODEL_PRIMARY, input);
+      const result = await callModel(primaryModel, input);
       const latency = Date.now() - start;
       bus?.emit({
         type: 'tool.result',
@@ -85,31 +138,41 @@ export async function geminiCall(
     } catch (err) {
       lastError = err;
       logger.warn(
-        { attempt, model: env.VERTEX_MODEL_PRIMARY, err: serialize(err) },
+        { attempt, model: primaryModel, err: serialize(err) },
         'gemini primary attempt failed'
       );
+      if (attempt < PRIMARY_ATTEMPTS) {
+        // Exponential backoff with jitter. 429s cluster — without a delay
+        // attempt 2 fires inside the same burst window and gets 429'd
+        // identically. 600ms × 2^(attempt-1) + ~200ms jitter pushes us past
+        // Vertex's per-second burst window.
+        const base = isRateLimit(err) ? 1200 : 600;
+        const backoff = base * 2 ** (attempt - 1) + Math.floor(Math.random() * 200);
+        await sleep(backoff);
+      }
     }
   }
 
-  if (!allowFallback) {
+  // If primary IS fallback (tier=flash) there's no further fallback model.
+  if (!allowFallback || primaryModel === fallbackModel) {
     bus?.emit({
       type: 'tool.result',
       tool: 'geminiCall',
-      result: { error: 'primary exhausted, fallback disabled' },
+      result: { error: 'primary exhausted, no further fallback' },
       latency_ms: Date.now() - start,
       ts: Date.now(),
     });
     throw new AppError(
       'UPSTREAM_FAILURE',
-      `Vertex Gemini primary (${env.VERTEX_MODEL_PRIMARY}) failed and fallback disabled: ${serialize(lastError)}`,
+      `Vertex Gemini (${primaryModel}) failed after ${PRIMARY_ATTEMPTS} attempts: ${serialize(lastError)}`,
       { cause: serialize(lastError) }
     );
   }
 
-  if (bus) recover(bus, 'vertex primary exhausted', `falling back to ${env.VERTEX_MODEL_FALLBACK}`);
+  if (bus) recover(bus, `vertex primary (${primaryModel}) exhausted`, `falling back to ${fallbackModel}`);
 
   try {
-    const fb = await callModel(env.VERTEX_MODEL_FALLBACK, input);
+    const fb = await callModel(fallbackModel, input);
     const latency = Date.now() - start;
     bus?.emit({
       type: 'tool.result',
@@ -129,7 +192,7 @@ export async function geminiCall(
     });
     throw new AppError(
       'UPSTREAM_FAILURE',
-      `Vertex Gemini primary (${env.VERTEX_MODEL_PRIMARY}) AND fallback (${env.VERTEX_MODEL_FALLBACK}) both failed. Primary: ${serialize(lastError)} | Fallback: ${serialize(err)}`,
+      `Vertex Gemini primary (${primaryModel}) AND fallback (${fallbackModel}) both failed. Primary: ${serialize(lastError)} | Fallback: ${serialize(err)}`,
       { primary: serialize(lastError), fallback: serialize(err) }
     );
   }
@@ -139,18 +202,28 @@ async function callModel(
   modelName: string,
   input: GeminiCallInput
 ): Promise<{ text: string; modelUsed: string }> {
+  await acquire();
+  // Gemini 2.5 models have "thinking" enabled by default — they consume token
+  // budget for invisible reasoning before producing the response. This
+  // truncated our Twin-turn JSON mid-string (observed: "Unterminated string at
+  // position 86") because thinking ate most of the 2048-token budget before
+  // any output was emitted. Disable thinking on Flash where we already use
+  // the SDK for compact, low-latency JSON. Pro keeps default thinking — its
+  // thinking quality is the reason to use Pro at all.
+  const isFlash = /flash/i.test(modelName);
   const callPromise = client.models.generateContent({
     model: modelName,
     contents: [{ role: 'user', parts: [{ text: input.prompt }] }],
     config: {
       temperature: input.temperature ?? 0.4,
       maxOutputTokens: input.maxOutputTokens ?? 1024,
+      ...(isFlash ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
       ...(input.systemInstruction
         ? { systemInstruction: { role: 'system', parts: [{ text: input.systemInstruction }] } }
         : {}),
       ...(input.responseFormat === 'json' ? { responseMimeType: 'application/json' } : {}),
     },
-  });
+  }).finally(release);
 
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(

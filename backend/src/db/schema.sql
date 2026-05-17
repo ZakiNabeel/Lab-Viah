@@ -144,3 +144,12 @@ create trigger twins_set_updated_at
   before update on twins
   for each row
   execute function set_updated_at();
+
+-- =========================================================
+-- Session 3 additive: link compatibility_reports back to a workplan trace.
+-- GET /match/results/:flowId filters by flow_id; the column also keeps the
+-- relationship between a Compatibility Report and its full Antigravity trace
+-- (in the `traces` table) explicit at the schema level.
+-- =========================================================
+alter table compatibility_reports add column if not exists flow_id text;
+create index if not exists compat_flow_id_idx on compatibility_reports (flow_id);
