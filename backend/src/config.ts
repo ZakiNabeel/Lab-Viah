@@ -5,14 +5,26 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
-  SUPABASE_URL: z.string().url(),
+  // Project URL only (https://<ref>.supabase.co). The Supabase JS client appends
+  // its own /rest/v1/, /auth/v1/, /storage/v1/ sub-paths. We auto-strip /rest/v1
+  // and trailing slashes here because copying the "API URL" from the Supabase
+  // dashboard gives the PostgREST URL (with /rest/v1/ suffix), which silently
+  // breaks the Auth client even though DB queries appear to work.
+  SUPABASE_URL: z
+    .string()
+    .url()
+    .transform((u) => u.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '')),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_JWT_SECRET: z.string().min(1),
 
   GEMINI_API_KEY: z.string().min(1),
-  GEMINI_MODEL_PRIMARY: z.string().default('gemini-2.0-pro-exp'),
-  GEMINI_MODEL_FALLBACK: z.string().default('gemini-2.0-flash-exp'),
+  // `gemini-pro-latest` / `gemini-flash-latest` are server-side aliases that
+  // always point at the current GA Pro/Flash. Pin to a specific revision
+  // (e.g. `gemini-3-pro-preview`) only when you need reproducible runs for
+  // judging. The aliases keep working as Google rotates models behind them.
+  GEMINI_MODEL_PRIMARY: z.string().default('gemini-pro-latest'),
+  GEMINI_MODEL_FALLBACK: z.string().default('gemini-flash-latest'),
 
   GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
   GOOGLE_MAPS_API_KEY: z.string().optional(),

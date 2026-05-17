@@ -43,8 +43,24 @@ function devCodeMatches(phone: string, otp: string): boolean {
 }
 
 /**
+ * Synthesizes a local-only email tied to a phone number, used as the auth
+ * identifier for the dev bypass. Format: dev-<digits>@rishtaai-dev.local.
+ * .local is an IANA-reserved TLD so it cannot collide with a real domain.
+ */
+function devEmailFor(phone: string): string {
+  const digits = phone.replace(/[^0-9]/g, '');
+  return `dev-${digits}@rishtaai-dev.local`;
+}
+
+/**
  * Backs the dev-bypass phone with a real Supabase auth user (created if missing)
  * and returns a real session via signInWithPassword. Real JWT → real RLS.
+ *
+ * IMPORTANT: We sign in with EMAIL+password, not PHONE+password, because phone-
+ * based sign-in requires the Phone auth provider to be enabled on the Supabase
+ * project — which requires Twilio. The synthetic email is internal-only; from
+ * the app's perspective the user is still identified by the phone (stored in
+ * our `users` table). MASTERPLAN §7 API surface is unchanged.
  */
 async function devBypassVerify(phone: string): Promise<VerifyResponse> {
   const password = env.DEV_OTP_PASSWORD;
@@ -55,29 +71,29 @@ async function devBypassVerify(phone: string): Promise<VerifyResponse> {
     );
   }
 
+  const email = devEmailFor(phone);
+
   // Attempt sign-in first. If it works, the dev user already exists.
-  const initial = await supabase.auth.signInWithPassword({ phone, password });
+  const initial = await supabase.auth.signInWithPassword({ email, password });
   let session = initial.data?.session ?? null;
   let user = initial.data?.user ?? null;
 
   if (!session) {
     // Create the dev user via admin API and retry sign-in.
     const created = await supabase.auth.admin.createUser({
-      phone,
+      email,
       password,
-      phone_confirm: true,
+      email_confirm: true,
+      user_metadata: { dev_bypass: true, phone },
     });
     if (created.error) {
-      // If we hit "User already registered" but sign-in failed above, the password
-      // doesn't match what's in Supabase — likely the password was rotated. Tell
-      // the operator clearly so they fix it instead of silently failing.
       throw new AppError(
         'INTERNAL',
-        `Dev bypass: failed to create or sign in dev user. Likely DEV_OTP_PASSWORD was rotated and Supabase has the old password. Fix: rotate password in Supabase Auth → Users, or pick a fresh DEV_OTP_PHONE.`,
+        'Dev bypass: failed to create or sign in dev user. If DEV_OTP_PASSWORD was rotated, delete the user from Supabase Auth → Users and retry.',
         { supabase: created.error.message }
       );
     }
-    const retry = await supabase.auth.signInWithPassword({ phone, password });
+    const retry = await supabase.auth.signInWithPassword({ email, password });
     if (!retry.data?.session) {
       throw new AppError('INTERNAL', 'Dev bypass: sign-in after create failed', {
         supabase: retry.error?.message ?? 'no session',
@@ -88,6 +104,7 @@ async function devBypassVerify(phone: string): Promise<VerifyResponse> {
   }
 
   // Upsert into our app's users table (the auth.users row exists separately).
+  // Phone lives only in OUR users table; auth.users has the synthetic email.
   const userId = user?.id ?? null;
   if (userId) {
     const { error: upsertErr } = await supabase

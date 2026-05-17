@@ -84,9 +84,11 @@ export async function geminiCall(
       latency_ms: Date.now() - start,
       ts: Date.now(),
     });
-    throw new AppError('UPSTREAM_FAILURE', 'Gemini primary model failed and fallback disabled', {
-      cause: serialize(lastError),
-    });
+    throw new AppError(
+      'UPSTREAM_FAILURE',
+      `Gemini primary (${env.GEMINI_MODEL_PRIMARY}) failed and fallback disabled: ${serialize(lastError)}`,
+      { cause: serialize(lastError) }
+    );
   }
 
   if (bus) recover(bus, 'gemini primary exhausted', `falling back to ${env.GEMINI_MODEL_FALLBACK}`);
@@ -110,10 +112,11 @@ export async function geminiCall(
       latency_ms: Date.now() - start,
       ts: Date.now(),
     });
-    throw new AppError('UPSTREAM_FAILURE', 'Gemini primary AND fallback both failed', {
-      primary: serialize(lastError),
-      fallback: serialize(err),
-    });
+    throw new AppError(
+      'UPSTREAM_FAILURE',
+      `Gemini primary (${env.GEMINI_MODEL_PRIMARY}) AND fallback (${env.GEMINI_MODEL_FALLBACK}) both failed. Primary: ${serialize(lastError)} | Fallback: ${serialize(err)}`,
+      { primary: serialize(lastError), fallback: serialize(err) }
+    );
   }
 }
 
@@ -157,12 +160,22 @@ function serialize(err: unknown): string {
 // =========================================================
 // Smoke test — used by /health and Session 1 exit-check.
 // =========================================================
-export async function geminiSmokeTest(): Promise<{ ok: boolean; modelUsed?: string; latencyMs?: number; error?: string }> {
+export async function geminiSmokeTest(): Promise<{
+  ok: boolean;
+  modelUsed?: string;
+  latencyMs?: number;
+  error?: string;
+}> {
   try {
+    // maxOutputTokens needs headroom because 2.5+/3.x Gemini models consume the
+    // token budget for internal "thinking" before producing visible output. With
+    // a tiny cap (e.g. 8) the model thinks itself out before any reply lands and
+    // returns an empty response. 256 is comfortably above all observed thinking
+    // budgets while keeping the smoke test cheap.
     const result = await geminiCall({
       prompt: 'Reply with the single word: PONG',
       temperature: 0,
-      maxOutputTokens: 8,
+      maxOutputTokens: 256,
       allowFallback: true,
     });
     return { ok: true, modelUsed: result.modelUsed, latencyMs: result.latencyMs };

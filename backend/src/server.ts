@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import sensible from '@fastify/sensible';
@@ -64,7 +65,12 @@ async function main(): Promise<void> {
 }
 
 // Run only when this file is the entrypoint, not when imported by tests.
-const invokedDirectly = import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}`;
+// fileURLToPath handles Windows correctly (file:///D:/... → D:\...) — naive
+// string comparison breaks on Windows because import.meta.url uses three
+// slashes after the scheme but a manually-constructed file:// URL would have
+// two, so the check always returned false and main() never ran.
+const invokedDirectly =
+  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1];
 if (invokedDirectly) {
   void main();
 }

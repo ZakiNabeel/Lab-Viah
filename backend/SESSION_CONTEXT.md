@@ -30,9 +30,9 @@
 
 ## 1. Current status snapshot
 
-- **Project phase:** Session 1 COMPLETE. Foundation skeleton in place; committed locally on `backend/main`; not yet pushed; no deploys yet.
-- **Last commit:** `e7c4185` — `session 1: backend foundation (Fastify + Supabase + trace bus + SSE)` (local on `backend/main`, not pushed).
-- **Last updated:** 2026-05-17 by Session 1
+- **Project phase:** Session 1 COMPLETE AND VERIFIED. Foundation skeleton in place; pushed to `origin/backend/main`; full exit check green.
+- **Last commit:** `4880e5c` pushed + Session 1 polish commit (added in this update) — see `git log`.
+- **Last updated:** 2026-05-17 by Session 1 (post-verification polish)
 - **Days remaining until 20 May submission:** 3 (Sun → Wed EOD)
 
 ---
@@ -67,6 +67,22 @@
 - [x] `tests/health.test.ts` + `tests/setup.ts` + `vitest.config.ts` — happy-path test for `/health`.
 - [x] `README.md` placeholder pointing at MASTERPLAN/ANTIGRAVITY/SESSION_CONTEXT.
 - [x] `traces/.gitkeep` for the Session 5 export drop.
+
+**Session 1 polish pass (2026-05-17, after first run-through):**
+- [x] `package.json` scripts now use Node `--env-file=.env` flag so the server actually loads `.env` (was crashing on env validation otherwise). `dev` and `start` both updated.
+- [x] `src/server.ts` entrypoint check rewritten with `fileURLToPath`. The old check (`import.meta.url === \`file://${argv[1]}\``) failed silently on Windows because of slash-count mismatch (`file:///D:/...` vs `file://D:/...`) — `main()` never ran and the server exited cleanly with exit code 0.
+- [x] `src/config.ts` `SUPABASE_URL` now auto-strips `/rest/v1` and trailing slashes. The dashboard's "API URL" copy gives the PostgREST URL with `/rest/v1/` suffix, which silently breaks Auth even though DB queries appear to work (HTTP normalizes the double-slash). Now safe to paste either form.
+- [x] `src/config.ts` Gemini defaults updated from `gemini-2.0-pro-exp` / `gemini-2.0-flash-exp` (both retired) to `gemini-pro-latest` / `gemini-flash-latest` — server-side aliases that always point at current GA models.
+- [x] `src/agents/_shared/gemini.ts` smoke-test bumped to `maxOutputTokens: 256`. Gemini 2.5+/3.x models consume token budget for internal "thinking" before producing visible output, so the original `8` cap made the smoke test always return empty.
+- [x] `src/agents/_shared/gemini.ts` error messages now include the model names AND the underlying SDK error string so debugging takes seconds instead of guesswork.
+- [x] `src/routes/auth.routes.ts` dev bypass switched from phone+password to email+password sign-in (synthetic `dev-<digits>@rishtaai-dev.local` email). Phone+password sign-in requires the Phone auth provider to be enabled (= Twilio), which we don't have. Email is always enabled. MASTERPLAN §7 API stays unchanged — the route still takes `{phone, otp}` and returns a real Supabase JWT.
+- [x] Exit check verified on a real boot:
+  - `GET /health` → HTTP 200, `{ok: true, data: {service: "rishtaai-backend", env: "development"}}`.
+  - `GET /health/deep` → HTTP 200, `db.ok: true` (~370ms), `gemini.ok: true` (~1.9s, model `gemini-3-flash-preview` per user's `.env`).
+  - `POST /auth/otp/start` with dev phone → `{ok: true, data: {sent: true, dev: true}}`.
+  - `POST /auth/otp/verify` with dev phone+code → real Supabase JWT with `user_metadata.phone: +923001234567`, `user_metadata.dev_bypass: true`.
+  - `GET /stream/demo_session1` → SSE heartbeat every ~1s.
+  - `npm test` → 1 test pass.
 
 ### Blockers
 
@@ -218,6 +234,9 @@ npm run test
 - **2026-05-17 — Supabase RLS enabled by default; backend uses service-role key which bypasses RLS.** Rationale: defense-in-depth — if anything ever hits Supabase with the anon key, default-deny protects user data. Mobile client never queries tables directly; everything goes through Fastify.
 - **2026-05-17 — Dev-mode OTP bypass added without changing MASTERPLAN §7 API.** `/auth/otp/start` and `/auth/otp/verify` keep the same request/response shape; when `DEV_OTP_BYPASS=true` and `NODE_ENV !== 'production'`, verify accepts a fixed phone+code pair and returns a real Supabase JWT (via `admin.createUser` + `signInWithPassword`). Production path with Twilio still works when `DEV_OTP_BYPASS=false`. Rationale: Supabase no longer ships a built-in phone test provider — we don't want to take a Twilio dependency just to develop, and the bypass is gated by `isProd` at config-load time so it can never accidentally ship.
 - **2026-05-17 — User vetoes scope cuts.** Earlier "drop Wali Mode" mitigation withdrawn. Full MASTERPLAN scope (all 8 agents, all 4 workplans, all 15 endpoints, Wali Mode included) is the target. Schedule risk acknowledged and accepted by user; mitigation moves from "cut scope" to "push harder on Sessions 2-3".
+- **2026-05-17 — Dev OTP bypass uses email+password (not phone+password) under the hood.** API surface (`{phone, otp}`) unchanged. Rationale: Supabase phone+password sign-in requires the Phone provider to be enabled (= Twilio). Synthetic `dev-<digits>@rishtaai-dev.local` email backs the bypass user; phone is stored in `user_metadata` on the auth.users row and in our `users` table.
+- **2026-05-17 — `SUPABASE_URL` auto-normalizes** (strips `/rest/v1` and trailing slashes) at config-load time. Rationale: Supabase dashboard's "API URL" includes the PostgREST suffix; pasting it as `SUPABASE_URL` silently breaks Auth (DB queries appear to work because of HTTP path normalization, Auth queries 404).
+- **2026-05-17 — Gemini smoke test uses `maxOutputTokens: 256`, not 8.** Rationale: 2.5+/3.x models eat token budget for internal thinking before visible output; tight caps yield empty responses. Per-agent calls can still pass their own budget.
 
 ---
 
@@ -260,7 +279,9 @@ npm run test
 - Route registration pattern is in `src/routes/auth.routes.ts`. Use Zod for body validation, return `ApiResponse<T>`.
 
 **Half-finished work / things to know:**
-- Nothing is half-finished. Session 1 closed cleanly.
+- Nothing is half-finished. Session 1 closed cleanly, all exit-check probes green.
+- **User's `.env` has a stale `GEMINI_MODEL_FALLBACK=gemini-2.0-flash-exp`** (404 dead). Primary `gemini-3-flash-preview` works so the bug is hidden — but if primary ever rate-limits, fallback will 404. **Session 2: update `.env` to `GEMINI_MODEL_FALLBACK=gemini-flash-latest`.**
+- **Per MASTERPLAN §3 ("Gemini 3 Pro for orchestration"), `GEMINI_MODEL_PRIMARY` should be `gemini-pro-latest` (or pin to `gemini-3-pro-preview` for reproducibility).** User currently has `gemini-3-flash-preview` — that's a Flash model, smaller/faster but weaker reasoning. The Moderator debate quality benefits from Pro. Suggest swap before Session 3 hero work.
 - `/health/deep` will call Gemini on every hit — don't put it in a cronjob.
 - The `traces` table has a `flow_id` column (text). `randomUUID()` is used by default but workplans can pass their own (the SSE demo path uses `demo_*` prefix).
 - Vitest setup at `tests/setup.ts` stubs env vars with placeholders. Real integration tests must override these via `process.env` before importing.
