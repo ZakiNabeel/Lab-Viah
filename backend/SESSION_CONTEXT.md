@@ -31,7 +31,7 @@
 ## 1. Current status snapshot
 
 - **Project phase:** Session 1 COMPLETE AND VERIFIED. Foundation skeleton in place; pushed to `origin/backend/main`; full exit check green.
-- **Last commit:** `4880e5c` pushed + Session 1 polish commit (added in this update) — see `git log`.
+- **Last commit:** `2672f6e` — `session 1: polish pass — fix env loading, Windows entrypoint, SUPABASE_URL, Gemini thinking budget, dev-bypass auth method; verified exit check green`. Pushed to `origin/backend/main`. Any commits after this are doc-only touch-ups.
 - **Last updated:** 2026-05-17 by Session 1 (post-verification polish)
 - **Days remaining until 20 May submission:** 3 (Sun → Wed EOD)
 
