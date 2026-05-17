@@ -31,7 +31,8 @@
 ## 1. Current status snapshot
 
 - **Project phase:** Session 2 COMPLETE AND VERIFIED. Onboarding + Twin Forge fully wired: 5 routes, 2 agents, STT stub w/ chip-fallback recovery, 12 scenario cards, end-to-end workplan with persisted Twin v1.0. Real Gemini + real Supabase journey runs in ~30 s and emits 71 trace events (exit-check ≥15).
-- **Last commit (Session 2):** `f6fdd54` — `session 2: onboarding + Twin Forge — full 4-layer workplan, 5 endpoints, agents, 12 scenario cards, vitest happy path`. Pushed to `origin/backend/main`.
+- **Last commit (Session 2):** `f6fdd54` — `session 2: onboarding + Twin Forge — full 4-layer workplan, 5 endpoints, agents, 12 scenario cards, vitest happy path`. Pushed. Followed by `67a5729` (commit-hash fix-up in SESSION_CONTEXT) and a Session-2.5 Vertex AI swap (commit hash filled in after push).
+- **GCP project for Vertex AI:** `lab-viah` (region `us-central1`). Vertex AI User role granted to the existing service account. `/health/deep` verified green with `modelUsed: gemini-2.5-pro` (~4.2 s first call incl. auth handshake; subsequent calls drop to ~1.5–2 s from the warm connection).
 - **Last updated:** 2026-05-17 (evening) by Session 2.
 - **Days remaining until 20 May submission:** ~3 (Sun evening → Wed EOD).
 
@@ -103,9 +104,20 @@
 - [x] **Vitest test** (`tests/onboarding.test.ts`) — mocks Gemini + Supabase, exercises all 4 layers through the workplan helpers, asserts `TwinSpecSchema.parse(result.spec).success === true` and `traceEventCount >= 15`. Runs in ~25 ms.
 - [x] **End-to-end verified against real Gemini + real Supabase** — Layer 1 (Hadeed, 26, male, Karachi, practicing) → 4 follow-up turns → 3 scenario cards → Layer 3 generate + correct → Wali conflict (user=practicing, wali=strict) → Finalize → `twinId=811c9b47-…` persisted, `system_prompt` ~400 words, **71 trace events** (exit check needed ≥15 — 4.7× margin), `TwinSpecSchema.parse()` clean.
 
+**Session 2.5 — Vertex AI swap (2026-05-17, late evening):**
+
+- [x] **Switched LLM backend from Google AI Studio → Vertex AI** because AI Studio free-tier quota for Gemini 3 Pro is `limit: 0`. Vertex bills via GCP and the $5 free credit covers far more than this hackathon needs (Gemini 2.5 Pro on Vertex: ~$1.25/M input + $10/M output → well under $1 for the whole event).
+- [x] **SDK choice: `@google/genai` v1.52** (not the deprecated `@google-cloud/vertexai`, which is being removed 2026-06-24, ~5 weeks after the hackathon). Same Vertex auth (ADC via `GOOGLE_APPLICATION_CREDENTIALS`); cleaner unified API.
+- [x] `package.json` — removed `@google/generative-ai`, added `@google/genai@^1.0.0`.
+- [x] `src/config.ts` — replaced `GEMINI_API_KEY` / `GEMINI_MODEL_*` with `GCP_PROJECT_ID`, `GCP_LOCATION` (defaults `us-central1`), `VERTEX_MODEL_PRIMARY` (defaults `gemini-2.5-pro`), `VERTEX_MODEL_FALLBACK` (defaults `gemini-2.5-flash`). `GOOGLE_APPLICATION_CREDENTIALS` is now required (was optional).
+- [x] `.env.example` — Vertex section documents the GCP project / region / IAM role requirements.
+- [x] `tests/setup.ts` — placeholder env updated to match.
+- [x] `src/agents/_shared/gemini.ts` — rewritten on top of `@google/genai`'s `GoogleGenAI({vertexai: true, project, location})` client. Public API of `geminiCall(input, bus)` is UNCHANGED — every caller in Session 2 (Onboarding Agent, Twin Forge Agent) works without modification.
+- [x] **Verified against live Vertex on project `lab-viah` / `us-central1`:** `curl /health/deep` → `gemini.ok: true`, `modelUsed: gemini-2.5-pro`, `latencyMs: 4239` (first call incl. auth handshake — warm calls drop to ~1.5–2 s).
+
 ### Blockers
 
-- **Gemini Pro free-tier quota = 0.** During the end-to-end Session 2 walk, every `gemini-pro-latest` call 429'd with `limit: 0, model: gemini-3.1-pro` from the free-tier quota. Each request retried twice on Pro, then fell back to `gemini-flash-latest` (which DOES have free-tier quota) — that's why the journey still completed, but every call paid the +2 retry latency cost. **Session 3's Moderator debate quality REQUIRES Pro (MASTERPLAN §3).** Action for Session 3 start: enable billing on the AI Studio project so Pro stops getting clamped to 0. Cost ceiling for the whole hackathon is single-digit USD.
+- *(none — Gemini Pro quota blocker resolved via Vertex AI swap above)*
 
 ### Open questions for the user / TL
 
@@ -274,6 +286,7 @@ npm run test
 - **2026-05-17 (Session 2) — STT shipped as a stub.** `sttTranscribe` validates input, emits the full tool-call/tool-result/recovery trace contract, but always returns `{lowConfidence: true, stub: true}`. Reasons: (a) `@google-cloud/speech` would be a new top-level dep — explicitly avoided per CLAUDE rule "no new deps without asking"; (b) the chip-fallback path IS the visible recovery for the demo, so the story is unchanged. Replacing the body of `attemptStt` is a 1-file change in Session 5 polish.
 - **2026-05-17 (Session 2) — Auth uses `supabase.auth.getUser(token)` rather than local HS256 verify.** Rationale: a `jsonwebtoken` dep would be new; the GoTrue round-trip is ~50–100 ms which is fine for hackathon-scale traffic. Local verify is a Session 5 polish item if latency matters.
 - **2026-05-17 (Session 2) — Service-role Supabase client must never call `signInWithPassword`.** Doing so mutates the singleton's in-memory session, replacing the service-role bearer with the signed-in user's JWT for ALL subsequent `.from(...)` calls. Sign-in goes through `supabasePublic` (anon client). This was a latent Session 1 bug that surfaced when Session 2 added a downstream `twins` insert; fixed in `src/routes/auth.routes.ts`.
+- **2026-05-17 (Session 2.5) — LLM backend = Vertex AI via `@google/genai`, NOT Google AI Studio.** Rationale: AI Studio's free-tier quota for Gemini 3 Pro is `limit: 0`; every Pro call 429s and falls back to Flash. Vertex bills via GCP — $5 free credit covers >>this hackathon. SDK is `@google/genai` v1+ (not the deprecated `@google-cloud/vertexai`, which is removed 2026-06-24). Auth via Application Default Credentials reading `GOOGLE_APPLICATION_CREDENTIALS` — same service-account JSON used by STT/TTS. Project `lab-viah` / region `us-central1`. Service account needs the `Vertex AI User` IAM role. Public API of `geminiCall(input, bus)` is unchanged — every Session-2 caller works without modification.
 
 ---
 
@@ -291,13 +304,9 @@ npm run test
 
 **Before doing anything in Session 3:**
 
-1. **Pull first.** `git -C D:\Projects\rishtaai pull --ff-only` to grab the Session 2 work.
-2. **FIX THE GEMINI QUOTA.** End-to-end Session 2 verification revealed `gemini-pro-latest` (alias for `gemini-3.1-pro`) has free-tier quota `limit: 0`. Every Pro call 429s and falls back to Flash. Session 3 Moderator debate REQUIRES Pro per MASTERPLAN §3. Two options:
-   - **Enable billing** on the Google AI Studio project. Recommended. Cost ceiling for the whole hackathon is single-digit USD.
-   - **Or** pin `GEMINI_MODEL_PRIMARY` to a Flash model that has free quota. Worse for Moderator reasoning.
-3. Verify with: `curl -s http://localhost:3000/health/deep | jq .data.gemini` — ok should be true AND `modelUsed: gemini-3.1-pro` (or whatever Pro alias resolves to) after billing is on.
-4. Re-read MASTERPLAN sections 5.3, 5.4, 5.5, 6.3, 7 (match + stream rows), 8.2, 10, 11 (Day 3).
-5. The Session 1 `.env` model warnings are RESOLVED — current `.env.example` defaults are correct. If user's local `.env` still has `gemini-3-flash-preview` as primary, swap to `gemini-pro-latest` so Moderator gets Pro.
+1. **Pull first.** `git -C D:\Projects\rishtaai pull --ff-only` to grab the Session 2 + 2.5 work.
+2. **Vertex AI is already wired and verified.** No action needed on the LLM backend. `/health/deep` should return `gemini.ok: true`, `modelUsed: gemini-2.5-pro` (project `lab-viah`, region `us-central1`). If it doesn't, confirm `GCP_PROJECT_ID`, `GCP_LOCATION`, `VERTEX_MODEL_PRIMARY`, `VERTEX_MODEL_FALLBACK`, `GOOGLE_APPLICATION_CREDENTIALS` are set in `.env` (see `.env.example`). Old `GEMINI_API_KEY` / `GEMINI_MODEL_*` lines can be removed — the config schema no longer reads them.
+3. Re-read MASTERPLAN sections 5.3, 5.4, 5.5, 6.3, 7 (match + stream rows), 8.2, 10, 11 (Day 3).
 
 **Smoke-test commands (full onboarding journey, ~30 s against live services):**
 
@@ -366,8 +375,9 @@ These have come up and been deferred. Do not silently build them.
 | Risk | Status | Mitigation in place? |
 |---|---|---|
 | Antigravity workplan auth/setup eats Day 1 | mitigated | ANTIGRAVITY.md drafted and trace contract locked in Session 1. |
-| **Gemini Pro free-tier quota = 0** | **open — NEW, Session-3 critical** | Discovered Session 2: `gemini-pro-latest` (alias for `gemini-3.1-pro`) returns 429 with `limit: 0` on the free tier. Every Pro call goes through 2× retry + fallback to Flash, adding ~3–5 s latency per call. Moderator debate quality WILL suffer if Pro stays unavailable. Mitigation: enable billing on Google AI Studio project at Session 3 start (single-digit USD ceiling). |
-| Gemini latency >5s in Moderator | open, partially mitigated | Pro→Flash fallback works end-to-end. Pre-cache hero scenarios in Session 5. With Pro quota fixed, latency should fit budget. |
+| Gemini Pro free-tier quota = 0 (Session 2 finding) | **RESOLVED Session 2.5** | Swapped LLM backend from AI Studio → Vertex AI on project `lab-viah`. `gemini-2.5-pro` verified live via `/health/deep`. $5 GCP free credit covers a multi-thousand-call hackathon. |
+| Vertex AI cold-start latency | open, low severity | First Gemini call after server boot incl. auth handshake takes ~4 s; warm calls ~1.5–2 s. Mitigation: pre-warm via `/health/deep` at server start, or simply accept first-call cost. Within MASTERPLAN §9 budget. |
+| Gemini latency >5s in Moderator | open, mitigated | Pro→Flash fallback baked into `geminiCall`. With Vertex Pro live, primary success rate should hit >95%; fallback path becomes the recovery story rather than the default. Pre-cache hero scenarios in Session 5. |
 | Cloud STT poor on Roman Urdu | mitigated for now | Chip-based fallback IS the recovery path; STT itself is a stub. Real STT wireup is Session 5 polish (needs `@google-cloud/speech` dep). |
 | Frontend integration mismatch | mitigated for SSE | `demo_*` flowId heartbeat (Session 1) + every `/onboarding/*` route returns `flowId === sessionId` so frontend can subscribe to `GET /stream/:flowId` for the live trace. Full OpenAPI-style spec still due end of Session 4. |
 | Supabase free tier rate limits | open | Self-host fallback ready (out of scope unless triggered). |
@@ -380,4 +390,4 @@ These have come up and been deferred. Do not silently build them.
 
 ---
 
-*End of SESSION_CONTEXT. Last touched: 2026-05-17 (evening) by Session 2. Next read: at start of Session 3.*
+*End of SESSION_CONTEXT. Last touched: 2026-05-17 (late evening) by Session 2.5 (Vertex AI swap). Next read: at start of Session 3.*

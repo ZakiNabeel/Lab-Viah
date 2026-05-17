@@ -18,15 +18,22 @@ const EnvSchema = z.object({
   SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_JWT_SECRET: z.string().min(1),
 
-  GEMINI_API_KEY: z.string().min(1),
-  // `gemini-pro-latest` / `gemini-flash-latest` are server-side aliases that
-  // always point at the current GA Pro/Flash. Pin to a specific revision
-  // (e.g. `gemini-3-pro-preview`) only when you need reproducible runs for
-  // judging. The aliases keep working as Google rotates models behind them.
-  GEMINI_MODEL_PRIMARY: z.string().default('gemini-pro-latest'),
-  GEMINI_MODEL_FALLBACK: z.string().default('gemini-flash-latest'),
+  // ---- Vertex AI (Gemini) ----
+  // We use Vertex AI (GCP-billed) instead of Google AI Studio. Auth is via
+  // Application Default Credentials picked up from GOOGLE_APPLICATION_CREDENTIALS
+  // — the same service-account JSON used by STT/TTS. The service account needs
+  // the `Vertex AI User` role (roles/aiplatform.user) on the project.
+  GCP_PROJECT_ID: z.string().min(1),
+  GCP_LOCATION: z.string().min(1).default('us-central1'),
+  // Vertex uses explicit versioned model names — no `*-latest` aliases. Pin to
+  // GA models for stability; opt into preview models per session if needed.
+  VERTEX_MODEL_PRIMARY: z.string().default('gemini-2.5-pro'),
+  VERTEX_MODEL_FALLBACK: z.string().default('gemini-2.5-flash'),
 
-  GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
+  // Service-account JSON path. Vertex AI SDK reads this via ADC; STT/TTS use
+  // it directly. Required when calling Vertex; optional otherwise (the
+  // smoke-test / health check will surface a clear error if it's missing).
+  GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1),
   GOOGLE_MAPS_API_KEY: z.string().optional(),
 
   TRACE_DUMP_TO_FILE: z
