@@ -1,18 +1,23 @@
 import { fileURLToPath } from 'node:url';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import sensible from '@fastify/sensible';
 import { env, isProd } from './config.js';
 import { logger } from './utils/logger.js';
 import { authRoutes } from './routes/auth.routes.js';
 import { streamRoutes } from './routes/stream.routes.js';
+import { onboardingRoutes } from './routes/onboarding.routes.js';
 import { healthCheck } from './db/client.js';
 import { geminiSmokeTest } from './agents/_shared/gemini.js';
 import type { ApiResponse } from './agents/_shared/types.js';
 
-export async function buildServer(): Promise<FastifyInstance> {
+// Return type intentionally inferred — passing a concrete Pino instance to
+// Fastify narrows the Logger generic on the FastifyInstance, which then doesn't
+// unify with the declared `FastifyInstance<RawServerDefault, ...>` default.
+// Inferring keeps the type honest without forcing a brittle cast.
+export async function buildServer() {
   const app = Fastify({
-    logger: logger as never,
+    logger,
     disableRequestLogging: !isProd,
     bodyLimit: 10 * 1024 * 1024, // 10 MB — accommodates base64 audio chunks for STT.
   });
@@ -28,16 +33,24 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   // Deep health — exercises Supabase + Gemini. Use sparingly (paid path).
+  // Always returns ok:true at the envelope level; the per-subsystem booleans
+  // (data.db.ok, data.gemini.ok) carry the actual liveness. This keeps the
+  // response a valid `ApiOk<...>` while still reporting partial outages.
   app.get('/health/deep', async () => {
     const [db, gemini] = await Promise.all([healthCheck(), geminiSmokeTest()]);
     return {
-      ok: db.ok && gemini.ok,
-      data: { db, gemini },
-    } satisfies ApiResponse<{ db: typeof db; gemini: typeof gemini }>;
+      ok: true,
+      data: { db, gemini, healthy: db.ok && gemini.ok },
+    } satisfies ApiResponse<{
+      db: typeof db;
+      gemini: typeof gemini;
+      healthy: boolean;
+    }>;
   });
 
   await app.register(authRoutes);
   await app.register(streamRoutes);
+  await app.register(onboardingRoutes);
 
   app.setErrorHandler((err, _req, reply) => {
     logger.error({ err }, 'unhandled route error');

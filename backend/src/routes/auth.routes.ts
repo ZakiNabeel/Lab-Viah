@@ -73,13 +73,22 @@ async function devBypassVerify(phone: string): Promise<VerifyResponse> {
 
   const email = devEmailFor(phone);
 
-  // Attempt sign-in first. If it works, the dev user already exists.
-  const initial = await supabase.auth.signInWithPassword({ email, password });
+  // IMPORTANT: sign-in MUST go through the anon client, not the service-role
+  // client. signInWithPassword mutates the in-memory session of whichever
+  // client it's called on, so calling it on `supabase` (service-role) replaces
+  // the service-role bearer with the dev user's JWT for ALL subsequent
+  // requests on that singleton — quietly turning every downstream
+  // `supabase.from(...)` into an RLS-bound user call. That breaks the
+  // users-row upsert below AND breaks finalize-time writes from later
+  // workplans. Using `supabasePublic` keeps the two responsibilities cleanly
+  // separated: anon client owns auth flows, service-role client owns writes.
+  const initial = await supabasePublic.auth.signInWithPassword({ email, password });
   let session = initial.data?.session ?? null;
   let user = initial.data?.user ?? null;
 
   if (!session) {
-    // Create the dev user via admin API and retry sign-in.
+    // Create the dev user via admin API (service-role required) and retry
+    // sign-in on the public client.
     const created = await supabase.auth.admin.createUser({
       email,
       password,
@@ -93,7 +102,7 @@ async function devBypassVerify(phone: string): Promise<VerifyResponse> {
         { supabase: created.error.message }
       );
     }
-    const retry = await supabase.auth.signInWithPassword({ email, password });
+    const retry = await supabasePublic.auth.signInWithPassword({ email, password });
     if (!retry.data?.session) {
       throw new AppError('INTERNAL', 'Dev bypass: sign-in after create failed', {
         supabase: retry.error?.message ?? 'no session',
