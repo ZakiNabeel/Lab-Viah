@@ -31,7 +31,7 @@
 ## 1. Current status snapshot
 
 - **Project phase:** Session 2 COMPLETE AND VERIFIED. Onboarding + Twin Forge fully wired: 5 routes, 2 agents, STT stub w/ chip-fallback recovery, 12 scenario cards, end-to-end workplan with persisted Twin v1.0. Real Gemini + real Supabase journey runs in ~30 s and emits 71 trace events (exit-check ≥15).
-- **Last commit (Session 2):** `f6fdd54` — `session 2: onboarding + Twin Forge — full 4-layer workplan, 5 endpoints, agents, 12 scenario cards, vitest happy path`. Pushed. Followed by `67a5729` (commit-hash fix-up in SESSION_CONTEXT) and a Session-2.5 Vertex AI swap (commit hash filled in after push).
+- **Last commit (Session 2.5):** `fb9a573` — `session 2.5: swap Gemini backend AI Studio -> Vertex AI via @google/genai`. Pushed to `origin/backend/main`. Predecessors: `f6fdd54` (Session 2 main delivery) → `67a5729` (commit-hash fix-up).
 - **GCP project for Vertex AI:** `lab-viah` (region `us-central1`). Vertex AI User role granted to the existing service account. `/health/deep` verified green with `modelUsed: gemini-2.5-pro` (~4.2 s first call incl. auth handshake; subsequent calls drop to ~1.5–2 s from the warm connection).
 - **Last updated:** 2026-05-17 (evening) by Session 2.
 - **Days remaining until 20 May submission:** ~3 (Sun evening → Wed EOD).
