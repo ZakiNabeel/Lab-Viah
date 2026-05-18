@@ -74,14 +74,25 @@ export const bookingRoutes: FastifyPluginAsync = async (app: FastifyInstance) =>
       });
 
       // Wait for the meetings row insert to land so the client gets a real
-      // meetingId in the kickoff response. The Wali brief etc. continue to
-      // stream over SSE — this only waits as long as the initial twin loads
-      // + (eventually) the insert, both of which are sub-second.
-      // If the workplan itself rejects before persistence, the meetingId
-      // promise rejects too — surface that as a 500-equivalent.
+      // meetingId in the kickoff response. The workplan continues running in
+      // the background AFTER meetingIdPromise resolves — endTrace is deferred
+      // via setImmediate so the SSE bus stays alive for mobile subscribers.
+      //
+      // Race against a 30s timeout: if persist_proposal doesn't land within
+      // that window (network stall, DB unreachable) we surface a clear error
+      // rather than hanging the request indefinitely.
+      const MEETING_ID_TIMEOUT_MS = 30_000;
       let meetingId: string;
       try {
-        meetingId = await meetingIdPromise;
+        meetingId = await Promise.race([
+          meetingIdPromise,
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new AppError('TIMEOUT', 'book_meeting did not produce a meetingId within 30s')),
+              MEETING_ID_TIMEOUT_MS
+            )
+          ),
+        ]);
       } catch (err) {
         if (err instanceof AppError) throw err;
         throw new AppError(

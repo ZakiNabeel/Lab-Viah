@@ -14,7 +14,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed": "tsx --env-file=.env src/db/seed-candidates.ts"
+    "seed": "tsx --env-file=.env src/db/seed-candidates.ts",
+    "export-traces": "tsx --env-file=.env scripts/export-traces.ts"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",

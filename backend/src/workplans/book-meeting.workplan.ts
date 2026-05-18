@@ -101,9 +101,12 @@ export function startBookMeeting(input: StartBookMeetingInput): {
   const bus = startTrace('book_meeting', { flowId, userId: input.userId });
   obs(bus, 'workplan', `book_meeting kickoff for user=${input.userId} candidate=${input.candidateTwinId}`);
 
-  // We resolve meetingIdPromise as soon as the row is inserted so the route
-  // handler can return it alongside flowId. The full outcome is the workplan's
-  // settled promise.
+  // meetingIdPromise resolves as soon as the DB row is inserted (task 5:
+  // persist_proposal). The route awaits this and returns { flowId, meetingId }
+  // to the client. Crucially, the workplan CONTINUES running in the background
+  // after this resolves — endTrace / bus.close() happen AFTER the route has
+  // already sent its response, so the mobile client can subscribe to
+  // /stream/:flowId and receive all remaining SSE events live.
   let resolveMeetingId!: (id: string) => void;
   let rejectMeetingId!: (err: unknown) => void;
   const meetingIdPromise = new Promise<string>((resolve, reject) => {
@@ -111,22 +114,30 @@ export function startBookMeeting(input: StartBookMeetingInput): {
     rejectMeetingId = reject;
   });
 
-  const promise = runInitiateWorkplan(input, flowId, bus, resolveMeetingId).catch(async (err) => {
-    logger.error(
-      { err: err instanceof Error ? err.message : String(err), flowId },
-      'book_meeting: initiate workplan threw'
-    );
-    recover(
-      bus,
-      'workplan-level exception escaped per-task handlers',
-      'closing trace with error outcome'
-    );
-    rejectMeetingId(err);
-    await endTrace(bus, { error: err instanceof Error ? err.message : String(err) });
-    throw err instanceof AppError
-      ? err
-      : new AppError('INTERNAL', `book_meeting failed: ${err instanceof Error ? err.message : String(err)}`);
-  });
+  // The outer promise resolves once the full workplan (including endTrace)
+  // completes. The route does NOT await this — it is used only for the
+  // background catch/log handler below.
+  const promise = runInitiateWorkplan(input, flowId, bus, resolveMeetingId).catch(
+    async (err) => {
+      logger.error(
+        { err: err instanceof Error ? err.message : String(err), flowId },
+        'book_meeting: initiate workplan threw'
+      );
+      recover(
+        bus,
+        'workplan-level exception escaped per-task handlers',
+        'closing trace with error outcome'
+      );
+      // Reject meetingId only if it hasn't resolved yet (pre-persist failure).
+      // After persist_proposal the meetingId is already resolved; double-reject
+      // is silently ignored by the Promise runtime.
+      rejectMeetingId(err);
+      await endTrace(bus, { error: err instanceof Error ? err.message : String(err) });
+      throw err instanceof AppError
+        ? err
+        : new AppError('INTERNAL', `book_meeting failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  );
 
   return { flowId, meetingIdPromise, promise };
 }
@@ -235,7 +246,34 @@ async function runInitiateWorkplan(
     userFirstName: ctx.userSpec.identity.name,
     candidateName: ctx.candidateSpec.identity.name,
   });
+
+  // Resolve meetingId NOW so the route handler can return { flowId, meetingId }
+  // to the client. We deliberately do NOT call endTrace here — the bus must
+  // remain open so that the mobile client can subscribe to /stream/:flowId and
+  // receive the task.finished:persist_proposal + workplan.finished events live.
+  //
+  // The post-persist continuation (taskEnd, decide, endTrace) is pushed into a
+  // background microtask via setImmediate. This guarantees that the route's
+  // `await meetingIdPromise` continuation runs FIRST (sending the HTTP response
+  // with flowId), and only THEN does endTrace close the bus and remove it from
+  // ACTIVE_BUSES. SSE subscribers connected in that window catch all events.
   resolveMeetingId(meetingId);
+
+  const outcome: BookMeetingInitiateOutcome = {
+    flowId,
+    meetingId,
+    candidateName: ctx.candidateSpec.identity.name,
+    proposal,
+    waliBrief,
+    candidateWaliSms,
+    durationMs: Date.now() - start,
+  };
+
+  // Background continuation — runs after the current microtask queue drains
+  // (i.e. after the route's await-meetingIdPromise continuation has fired and
+  // the HTTP response has been queued to the socket).
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
   taskEnd(bus, 'persist_proposal', {
     meetingId,
     proposalCount: proposal.proposals.length,
@@ -247,16 +285,6 @@ async function runInitiateWorkplan(
     `book_meeting initiate complete: meeting ${meetingId} in 'proposed' state`,
     `${proposal.proposals.length} (slot, venue) proposals; wali brief in ${waliBrief.briefs.map((b) => b.language).join(' + ')}; awaiting /book/confirm`
   );
-
-  const outcome: BookMeetingInitiateOutcome = {
-    flowId,
-    meetingId,
-    candidateName: ctx.candidateSpec.identity.name,
-    proposal,
-    waliBrief,
-    candidateWaliSms,
-    durationMs: Date.now() - start,
-  };
 
   await endTrace(bus, outcome);
   return outcome;

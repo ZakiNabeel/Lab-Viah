@@ -7,6 +7,7 @@ import { logger } from './utils/logger.js';
 import { authRoutes } from './routes/auth.routes.js';
 import { streamRoutes } from './routes/stream.routes.js';
 import { onboardingRoutes } from './routes/onboarding.routes.js';
+import { twinRoutes } from './routes/twin.routes.js';
 import { matchRoutes } from './routes/match.routes.js';
 import { bookingRoutes } from './routes/booking.routes.js';
 import { disputeRoutes } from './routes/dispute.routes.js';
@@ -55,6 +56,7 @@ export async function buildServer() {
   await app.register(authRoutes);
   await app.register(streamRoutes);
   await app.register(onboardingRoutes);
+  await app.register(twinRoutes, { prefix: '/twin' });
   await app.register(matchRoutes);
   await app.register(bookingRoutes);
   await app.register(disputeRoutes);

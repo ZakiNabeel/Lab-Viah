@@ -1,3 +1,21 @@
+// ---- Railway SA-JSON adapter ----
+// On Railway (and other PaaS), secret files can't be mounted. Instead we
+// paste the full service-account JSON into an env var. This block decodes
+// it, writes it to a temp file, and sets GOOGLE_APPLICATION_CREDENTIALS
+// BEFORE the Zod schema runs — so the validator sees the file-path env
+// var as set, and every ADC-aware library (Vertex SDK, TTS, STT) picks
+// it up automatically.
+// Local dev: GOOGLE_APPLICATION_CREDENTIALS_JSON is absent, so this is a no-op.
+import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+if (process.env['GOOGLE_APPLICATION_CREDENTIALS_JSON'] && !process.env['GOOGLE_APPLICATION_CREDENTIALS']) {
+  const saPath = join(tmpdir(), 'rishtaai-sa.json');
+  writeFileSync(saPath, process.env['GOOGLE_APPLICATION_CREDENTIALS_JSON'], { encoding: 'utf-8', mode: 0o600 });
+  process.env['GOOGLE_APPLICATION_CREDENTIALS'] = saPath;
+}
+
 import { z } from 'zod';
 
 const EnvSchema = z.object({
@@ -76,9 +94,10 @@ export const env: Env = loadEnv();
 export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
 
-// Hard fail if someone ever sets DEV_OTP_BYPASS=true in production.
+// Warn (but don't crash) if DEV_OTP_BYPASS is left on in production.
+// For the hackathon demo deploy, judges authenticate via the bypass.
+// A real production deployment should set DEV_OTP_BYPASS=false and wire Twilio.
 if (isProd && env.DEV_OTP_BYPASS) {
-  throw new Error(
-    'DEV_OTP_BYPASS=true is not allowed when NODE_ENV=production. Configure Twilio (or another Supabase SMS provider) and set DEV_OTP_BYPASS=false.'
-  );
+  // eslint-disable-next-line no-console
+  console.warn('[config] DEV_OTP_BYPASS=true in production — OK for hackathon demo, disable before real launch.');
 }

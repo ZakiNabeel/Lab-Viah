@@ -32,9 +32,9 @@ The four workplans we ship:
 
 | Workplan | Trigger | Agents involved |
 |---|---|---|
-| `onboarding_flow` | `POST /onboarding/finalize` (also drives layers 1–4) | Onboarding, Twin Forge, Wali (optional) |
-| `find_matches` | `POST /match/request` | Prescreen, User Twin, Candidate Twin (×N), Moderator |
-| `book_meeting` | `POST /book/initiate` | Wali, Booking |
+| `onboarding_flow` | Spans 5 HTTP calls: `POST /onboarding/layer1`, `layer2`, `layer3`, `wali`, `finalize`. One trace per user journey; `sessionId === flowId` across all calls. | Onboarding, Twin Forge, Wali (optional) |
+| `find_matches` | `POST /match/request` | Moderator (unified per-dim call voices both Twins + scores); User Twin + Candidate Twin agents are not on the critical path — see §9 |
+| `book_meeting` | `POST /book/initiate` (async, Phase 1) + `POST /book/confirm` (sync, Phase 2) | Wali, Booking |
 | `handle_dispute` | `POST /dispute/file` | Dispute |
 
 ### 2.2 Agent
@@ -44,7 +44,20 @@ An agent is a TypeScript module in `src/agents/` that owns one role. Every agent
 - Calls only registered tools.
 - Returns a typed output.
 
-The eight agents are specified in `MASTERPLAN.md` section 5. No other agents may be added without updating the MASTERPLAN.
+The eight as-shipped agents (details in `MASTERPLAN.md` §5):
+
+| Agent | As-shipped role |
+|---|---|
+| Onboarding | Gemini-backed interview conductor; chip-fallback recovery on STT low-confidence or malformed JSON. |
+| Twin Forge | Three entry points: `forgeTwin` (initial synthesis, v1), `generateLayer3Statements`, `reconcileWaliConflicts` (flags conflicts, does NOT auto-resolve — MASTERPLAN §5.2). Fourth entry: `forgeTwinV2` — post-meeting feedback → increments `version`. |
+| User Twin | Gemini-backed, `system_prompt` injected via `systemInstruction`. Exported per MASTERPLAN §5.3 but NOT on the `find_matches` workplan critical path — the Moderator's unified per-dim call renders both Twin statements. |
+| Candidate Twin | Thin wrapper over `runTwinTurn` with `side='candidate_twin'`. Same critical-path note as User Twin. |
+| Moderator | 8-dim debate loop; 1 unified Gemini Flash call per dim (voices both Twins + scoring). 60 s per-debate self-budget + `recover` on overflow. Final synthesis on Pro (1 call per debate, 5 per workplan). |
+| Wali | Bilingual (EN + user's native UR/RO_UR) rishta brief; Pro tier; 2 language calls + 2 TTS calls in parallel. Mock SMS rendered to both walis. |
+| Booking | Two entry points: `proposeSlots` (calendar + venue in parallel) and `finalizeMeeting` (locks chosen slot/venue, schedules reminders). |
+| Dispute | Single Gemini Pro call; 1-5 severity, 5 action types; deterministic fallback resolution on failure. |
+
+No other agents may be added without updating the MASTERPLAN.
 
 ### 2.3 Tool
 A tool is anything an agent can call that has side effects or talks to a non-deterministic service. Every tool:
@@ -54,7 +67,11 @@ A tool is anything an agent can call that has side effects or talks to a non-det
 - Has a fallback path documented in `MASTERPLAN.md` section 9.
 - Emits `tool.call` and `tool.result` trace events automatically — agents do not emit these manually.
 
-Tools registered for Session 1+: `geminiCall`, `supabaseRead`, `supabaseWrite`, `sttTranscribe`, `ttsSynthesize`, `mapsFindVenue`, `smsRender`, `calendarMock`.
+Tools registered: `geminiCall`, `supabaseRead`, `supabaseWrite`, `sttTranscribe`, `ttsSynthesize`, `mapsFindVenue`, `smsRender`, `calendarMock`.
+
+Notes:
+- `sttTranscribe` is a **stub** — `attemptStt` always returns `{lowConfidence: true, stub: true}`. The chip-fallback recovery in the Onboarding Agent IS the demo's visible recovery for this tool. Replacing the stub body is the only change needed when real Cloud Speech-to-Text is wired.
+- `ttsSynthesize` uses `@google-cloud/text-to-speech` (added Session 4). Falls back to text-only with a `recover` event when GCP credentials are missing or both attempts fail.
 
 ### 2.4 Trace
 A trace is the chronological stream of events emitted during one workplan run. Events conform to the `TraceEvent` union in `src/agents/_shared/types.ts`. They flow through three sinks simultaneously:
@@ -115,6 +132,8 @@ Concrete example: `POST /match/request`.
 
 The `TraceBus` is the single chokepoint that every event goes through. There is no other path to the trace.
 
+**Exception — `POST /book/initiate`:** the route awaits `meetingIdPromise` (which resolves only after the meetings row is inserted in step 5) before it returns. By the time the mobile client subscribes to `GET /stream/:flowId`, the trace bus has already closed. The SSE consumer therefore catches only the final `workplan.finished` event. The full trace is still persisted in the `traces` table and readable via Supabase. The `POST /match/request` flow is unaffected — that route returns `flowId` before any workplan work starts.
+
 ---
 
 ## 5. Mock vs real (no real PII, no real side effects)
@@ -123,14 +142,14 @@ Per `MASTERPLAN.md` §1 non-negotiables 8 and 9:
 
 | Tool | Mode in this build |
 |---|---|
-| Gemini (text) | Real. Live LLM calls. |
-| Cloud STT | Real. Audio chunks → transcript. |
-| Cloud TTS | Real. Wali brief → MP3. |
-| Maps Places | Real for venue lookups, hardcoded fallback per city. |
-| Supabase | Real. Free-tier project. |
+| Vertex AI (Gemini) | Real. Live calls via `@google/genai` against project `lab-viah` / `us-central1`. Primary model: `gemini-2.5-pro`; fallback: `gemini-2.5-flash`. Flash has `thinkingBudget: 0`; Pro keeps default thinking. |
+| Cloud STT | **Stub.** `sttTranscribe` always returns `{lowConfidence: true, stub: true}`. Chip-fallback fires and IS the demo's visible recovery. |
+| Cloud TTS | Real when `GOOGLE_APPLICATION_CREDENTIALS` is set (`@google-cloud/text-to-speech`). Falls back to text-only with a `recover` event when credentials are absent or both attempts fail. Wali brief → base64 `data:audio/mp3` URI. |
+| Maps Places | Real for venue lookups (`places:searchText` via fetch against Places API v1, `regionCode: PK/AE`). Hardcoded city fallback (Karachi/Lahore/Islamabad/Multan/Dubai) when key is missing or API returns insufficient results — every fallback branch emits a `recover` event. |
+| Supabase | Real. Free-tier project `lab-viah`. |
 | SMS | **Mocked.** `smsRender` returns a rendered SMS body to the client; nothing leaves the server. |
 | Wali phone | **Mocked.** Numbers in seed data are fictional. |
-| Calendar | **Mocked.** `calendarMock` returns fake availability windows. |
+| Calendar | **Mocked.** `calendarMock` returns deterministic availability windows (PRNG seeded by phone-pair hash). |
 | Payments | Out of scope. Not in any tool. |
 
 Mocked tools still emit `tool.call` and `tool.result` events. The trace must read like a real run.
@@ -166,9 +185,11 @@ traces/
 └── recovery__moderator_timeout.jsonl   # the visible-recovery exemplar
 ```
 
-Each file is newline-delimited JSON, one `TraceEvent` per line, in chronological order. The Supabase `traces` row is the source of truth; the JSONL files are dumps.
+Each file is newline-delimited JSON, one `TraceEvent` per line, in chronological order. The Supabase `traces` row is the source of truth; the JSONL files are dumps. The `traces.events` column is already chronological (populated by `bus.events()` at workplan close).
 
-The export script lives at `scripts/export-traces.ts` (Session 5 deliverable).
+The export script lives at `scripts/export-traces.ts` and is run via `npm run export-traces`. It reads from the `traces` Supabase table and writes the JSONL files to `traces/`.
+
+See `docs/COSTS.md` for the per-operation cost analysis (10×, 100×, 1000× scale projections).
 
 ---
 
@@ -182,6 +203,24 @@ To prevent confusion:
 
 If a task does not involve multi-step agent reasoning or a tool with side effects, it does not need a workplan. CRUD endpoints (`/twin/me`, `/health`) call Supabase directly and emit nothing.
 
+`POST /feedback/post-meeting` is intentionally workplan-free. It is a single Gemini Pro call + deterministic weight adjustment + one Supabase insert — CRUD-ish with no branching task graph. Pino structured logs cover decision auditing for this endpoint; no row is written to the `traces` table. The `forgeTwinV2` function in Twin Forge is the only path that increments `TwinSpec.version`.
+
 ---
 
-*End of ANTIGRAVITY.md. Last touched: Session 1 draft.*
+## 9. As-shipped deviations from spec
+
+Brief record of where the implementation diverged from MASTERPLAN intent, and why.
+
+| Item | Spec | As-shipped | Why |
+|---|---|---|---|
+| Per-dim Moderator calls | 3 separate calls (user_twin → candidate_twin → scoring) | 1 unified call per dim | Vertex burst pressure under 5-parallel debates (Session 3). Agent files preserved per MASTERPLAN §5.3. |
+| Final synthesis tier | (unspecified) | Pro after Session 4 quota uplift; Flash before | Quality matters; 5 calls per workplan is low volume. |
+| MAX_CONCURRENT | (unspecified) | 10 (raised from 3 in Session 4) | Billing-enabled Vertex 300 RPM provides headroom; 3 was the hackathon-quota safety value. |
+| `thinkingBudget` on Flash | (default) | 0 on Flash | Default thinking ate ~80% of the token budget and truncated JSON mid-string. Pro keeps default thinking. |
+| `/book/initiate` SSE | Live-stream workplan events | Client catches only `workplan.finished` | Route awaits `meetingIdPromise` before returning; bus is already closed when client subscribes. Trace persisted in DB regardless. |
+| `/feedback/post-meeting` | (unspecified) | No workplan / no `traces` row | CRUD-ish, 1 Gemini call; Pino logs cover audit trail. |
+| STT | Real Google Cloud Speech | Stub — always returns `lowConfidence: true` | Avoided adding `@google-cloud/speech` as a new dep; chip-fallback IS the demo's visible recovery. |
+
+---
+
+*End of ANTIGRAVITY.md. Last touched: Session 5 (2026-05-18) — ship day final pass.*
