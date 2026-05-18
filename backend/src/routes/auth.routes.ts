@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { supabasePublic, supabase } from '../db/client.js';
-import { env, isProd } from '../config.js';
+import { env } from '../config.js';
 import { AppError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import type { ApiResponse } from '../agents/_shared/types.js';
@@ -31,7 +31,10 @@ type VerifyResponse = {
 };
 
 function devBypassActive(): boolean {
-  return !isProd && env.DEV_OTP_BYPASS;
+  // Bypass is controlled solely by the DEV_OTP_BYPASS flag.
+  // The !isProd guard was removed so Railway (NODE_ENV=production) can still
+  // serve judges via the bypass. The config.ts warn is sufficient.
+  return env.DEV_OTP_BYPASS;
 }
 
 function devPhoneMatches(phone: string): boolean {
