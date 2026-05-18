@@ -85,11 +85,24 @@ const EnvSchema = z.object({
   // (or another Supabase SMS provider) must be configured.
   DEV_OTP_BYPASS: z
     .string()
-    .transform((v) => v === 'true')
+    .transform((v) => v.trim() === 'true')
     .default('false'),
-  DEV_OTP_PHONE: z.string().default('+923001234567'),
-  DEV_OTP_CODE: z.string().default('123456'),
-  DEV_OTP_PASSWORD: z.string().optional(),
+  // Trim defensively: Railway / Vercel / similar dashboards preserve trailing
+  // spaces silently, so `+923001234567 ` !== `+923001234567` slips past the
+  // strict-equality check in auth.routes.devPhoneMatches and falls through to
+  // the real Twilio path → "Unsupported phone provider".
+  DEV_OTP_PHONE: z
+    .string()
+    .transform((v) => v.trim())
+    .default('+923001234567'),
+  DEV_OTP_CODE: z
+    .string()
+    .transform((v) => v.trim())
+    .default('123456'),
+  DEV_OTP_PASSWORD: z
+    .string()
+    .transform((v) => v.trim())
+    .optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
