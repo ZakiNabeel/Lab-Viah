@@ -344,3 +344,145 @@ function fallbackSystemPrompt(body: z.infer<typeof SpecBodySchema>): string {
     `Be specific. Avoid platitudes. If a question doesn't apply to me, say so plainly rather than make something up.`
   );
 }
+
+// =========================================================
+// 4. Post-meeting feedback → Twin v2
+// =========================================================
+//
+// MASTERPLAN §7 — POST /feedback/post-meeting feeds Twin Forge. We compute
+// updated dimension weights deterministically from the 4 ratings, then take
+// ONE Gemini Pro pass to refresh the system_prompt voice with what the user
+// learned. Result is a NEW twin spec with version=prev+1; the caller writes
+// it as a fresh row (we keep history).
+
+export type PostMeetingFeedback = {
+  // 1..5 each. 1 = bad, 5 = great.
+  truthfulness: number;        // Were they as described?
+  chemistry: number;           // Did the conversation flow?
+  family_alignment: number;    // Did the families feel aligned?
+  would_meet_again: number;    // Overall: would you meet again?
+  narrative?: string;          // Optional free-text.
+};
+
+const FEEDBACK_LOW_THRESHOLD = 2;
+
+export function adjustWeightsFromFeedback(
+  current: Record<Dimension, number>,
+  fb: PostMeetingFeedback
+): Record<Dimension, number> {
+  const out: Record<Dimension, number> = { ...current };
+  // Each rating ≤2 nudges the corresponding weight up. The bumps are small
+  // (0.03–0.05) so a single meeting's feedback doesn't dominate the Twin's
+  // self-concept; we'd see consistent dimensions get reinforced over many
+  // feedback rounds. The clamp at 0.4 keeps any one dimension from drowning
+  // the others.
+  if (fb.truthfulness <= FEEDBACK_LOW_THRESHOLD) {
+    out.dealbreakers = Math.min(0.4, (out.dealbreakers ?? 0) + 0.05);
+  }
+  if (fb.family_alignment <= FEEDBACK_LOW_THRESHOLD) {
+    out.family = Math.min(0.4, (out.family ?? 0) + 0.05);
+  }
+  if (fb.chemistry <= FEEDBACK_LOW_THRESHOLD) {
+    out.conflict = Math.min(0.4, (out.conflict ?? 0) + 0.03);
+  }
+  if (fb.would_meet_again <= FEEDBACK_LOW_THRESHOLD) {
+    // Generic "they didn't feel right" — nudge deen + family marginally.
+    out.deen = Math.min(0.4, (out.deen ?? 0) + 0.02);
+    out.family = Math.min(0.4, (out.family ?? 0) + 0.02);
+  }
+  // Renormalize so weights sum to 1.0.
+  const sum = Object.values(out).reduce((a, b) => a + b, 0);
+  if (sum === 0) return defaultWeights();
+  const normalized = {} as Record<Dimension, number>;
+  for (const d of DIMENSIONS) normalized[d] = (out[d] ?? 0) / sum;
+  return normalized;
+}
+
+export type ForgeTwinV2Result = {
+  spec: TwinSpec;
+  weightsChanged: Partial<Record<Dimension, { from: number; to: number }>>;
+};
+
+export async function forgeTwinV2(args: {
+  previousSpec: TwinSpec;
+  feedback: PostMeetingFeedback;
+  meetingCandidateName: string;
+  bus?: TraceBus;
+}): Promise<ForgeTwinV2Result> {
+  const { previousSpec, feedback } = args;
+
+  // Step 1: deterministic weight adjustment.
+  const newWeights = adjustWeightsFromFeedback(previousSpec.dimension_weights, feedback);
+  const weightsChanged: Partial<Record<Dimension, { from: number; to: number }>> = {};
+  for (const d of DIMENSIONS) {
+    const from = previousSpec.dimension_weights[d];
+    const to = newWeights[d];
+    if (Math.abs(from - to) > 0.005) weightsChanged[d] = { from, to };
+  }
+
+  // Step 2: refresh system_prompt via Gemini. Falls back to a deterministic
+  // re-render of the previous prompt with an appended "learned from feedback"
+  // paragraph if Gemini fails.
+  let newSystemPrompt = previousSpec.system_prompt;
+  try {
+    const refreshPrompt = `You are RishtaAI's Twin Forge. Below is the user's current Twin system_prompt and the feedback they just gave after a real meeting with a candidate. Produce an UPDATED system_prompt that retains the same identity, deen, family, career, finances, kids, conflict, and geography statements but adds 2-3 sentences reflecting what they learned from this meeting. The voice stays first-person.
+
+CURRENT SYSTEM PROMPT:
+${previousSpec.system_prompt}
+
+POST-MEETING FEEDBACK:
+- Met: ${args.meetingCandidateName}
+- Truthfulness (1-5): ${feedback.truthfulness}
+- Chemistry (1-5): ${feedback.chemistry}
+- Family alignment (1-5): ${feedback.family_alignment}
+- Would meet again (1-5): ${feedback.would_meet_again}
+${feedback.narrative ? `- Narrative: "${feedback.narrative.slice(0, 600)}"` : '- Narrative: (none)'}
+
+Output ONLY the new system_prompt as a plain string (no JSON, no markdown, no leading commentary). Approximately the same length as the input.`;
+
+    const gem = await geminiCall(
+      {
+        prompt: refreshPrompt,
+        modelTier: 'pro',
+        temperature: 0.5,
+        maxOutputTokens: 1200,
+      },
+      args.bus
+    );
+    const candidate = gem.text.trim();
+    if (candidate.length >= 50) {
+      newSystemPrompt = candidate;
+    } else {
+      throw new AppError('UPSTREAM_FAILURE', 'refreshed system_prompt too short to be useful');
+    }
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'forgeTwinV2: prompt refresh failed; falling back to appended note');
+    if (args.bus) {
+      recover(
+        args.bus,
+        'Twin v2 system_prompt refresh failed',
+        'appending a deterministic post-feedback note to the prior system_prompt'
+      );
+    }
+    const note = ` Update from a recent meeting with ${args.meetingCandidateName}: truthfulness ${feedback.truthfulness}/5, chemistry ${feedback.chemistry}/5, family alignment ${feedback.family_alignment}/5. I am tightening how I assess matches going forward.`;
+    newSystemPrompt = previousSpec.system_prompt + note;
+  }
+
+  const v2: TwinSpec = {
+    ...previousSpec,
+    dimension_weights: newWeights,
+    system_prompt: newSystemPrompt,
+    version: previousSpec.version + 1,
+  };
+
+  if (args.bus) {
+    decide(
+      args.bus,
+      'twin_forge',
+      `forged Twin v${v2.version} from post-meeting feedback`,
+      `${Object.keys(weightsChanged).length} weight(s) shifted; system_prompt refreshed via ${newSystemPrompt === previousSpec.system_prompt ? 'no-op' : 'Gemini Pro'}`
+    );
+  }
+
+  return { spec: TwinSpecSchema.parse(v2), weightsChanged };
+}

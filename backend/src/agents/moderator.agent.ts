@@ -422,9 +422,13 @@ async function runFinalSynthesis(
         temperature: SYNTHESIS_TEMPERATURE,
         maxOutputTokens: SYNTHESIS_MAX_TOKENS,
         responseFormat: 'json',
-        // Synthesis just rephrases the already-scored dims into 3+3 phrases —
-        // Flash is plenty. Saves ~3s per debate vs Pro.
-        modelTier: 'flash',
+        // Pro on synthesis — 1 call per debate (5 per workplan total), low
+        // call-volume budget. Session 3 ran this on Flash with thinkingBudget=0
+        // and the JSON came back truncated 5/5 times, forcing fallbackHighlights.
+        // With billing enabled (300 RPM) Pro lands in ~3-4s and produces
+        // narrative top_strengths/top_friction_points rather than deterministic
+        // dim labels.
+        modelTier: 'pro',
       },
       input.bus
     );

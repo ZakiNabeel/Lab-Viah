@@ -63,13 +63,17 @@ const PRIMARY_ATTEMPTS = 2;
 const PRIMARY_TIMEOUT_MS = 12_000;
 
 // =========================================================
-// Global concurrency cap — keeps Vertex from 429-throttling us under the
-// 5-parallel-debates × 3-calls-per-dim burst load. Empirically:
+// Global concurrency cap.
+// Session 3 (hackathon-tier quota, ~60 RPM):
 //   - cap=8 → cascading 429s on us-central1 (the burst limit, not RPM).
-//   - cap=3 → steady throughput, ~0 429s. The hackathon-tier per-region
-//     burst limit on lab-viah seems to land here. Bump if quota grows.
+//   - cap=3 → steady throughput, ~0 429s.
+// Session 4 (billing enabled, 300 RPM on gemini-pro per us-central1):
+//   - cap=10 verified clean — 40/40 dims, 0 recoveries, 0 timeouts, 0 429s,
+//     5-debate workplan in 29.8s. 5 parallel debates × 1 call/dim peaks at 5
+//     in-flight, with comfortable headroom for the +1 final synthesis per
+//     debate. Drop back to 3 if quota is ever revoked.
 // =========================================================
-const MAX_CONCURRENT = 3;
+const MAX_CONCURRENT = 10;
 let inFlight = 0;
 const waiters: Array<() => void> = [];
 

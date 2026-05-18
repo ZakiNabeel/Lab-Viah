@@ -8,6 +8,9 @@ import { authRoutes } from './routes/auth.routes.js';
 import { streamRoutes } from './routes/stream.routes.js';
 import { onboardingRoutes } from './routes/onboarding.routes.js';
 import { matchRoutes } from './routes/match.routes.js';
+import { bookingRoutes } from './routes/booking.routes.js';
+import { disputeRoutes } from './routes/dispute.routes.js';
+import { feedbackRoutes } from './routes/feedback.routes.js';
 import { healthCheck } from './db/client.js';
 import { geminiSmokeTest } from './agents/_shared/gemini.js';
 import type { ApiResponse } from './agents/_shared/types.js';
@@ -53,6 +56,9 @@ export async function buildServer() {
   await app.register(streamRoutes);
   await app.register(onboardingRoutes);
   await app.register(matchRoutes);
+  await app.register(bookingRoutes);
+  await app.register(disputeRoutes);
+  await app.register(feedbackRoutes);
 
   app.setErrorHandler((err, _req, reply) => {
     logger.error({ err }, 'unhandled route error');

@@ -30,12 +30,12 @@
 
 ## 1. Current status snapshot
 
-- **Project phase:** Session 3 COMPLETE AND VERIFIED LOCALLY (not pushed — teammate's parallel Session 3-5 work lives on `origin/backend/main`; user will reconcile). Matching subsystem fully wired: User Twin + Candidate Twin + Moderator agents, 12 candidate twins seeded, prescreen 12→5, find_matches workplan, /match/request + /match/results/:flowId + /baseline/match endpoints. End-to-end run against real Vertex + real Supabase completes in ~30 s with 40/40 dimensions scored across 5 parallel debates and 268 trace events.
-- **Last commit landed locally this session:** `eb2f965` — `session 3: matching subsystem — User/Candidate Twin + Moderator + find_matches workplan + 12 candidates + baseline endpoint`. **NOT pushed** (user reconciling with teammate's parallel work on `origin/backend/main`). Predecessor: `fb9a573` (Session 2.5 — Vertex swap).
-- **Important Vertex behaviour pinned in this session:** Vertex hackathon-tier quota on project `lab-viah` cannot sustain 5-parallel × 3-calls-per-dim Pro bursts. Session 3 architecture mitigates via (a) unified 1-call-per-dim flow (replaces the 3-call user→candidate→scoring chain), (b) Flash on all per-dim and synthesis calls with `thinkingConfig.thinkingBudget=0`, (c) global concurrency semaphore cap=3 in the Gemini wrapper, (d) tight 12 s per-call timeout + 2-attempt retry with 1.2 s jitter backoff on 429s. See §5 decisions.
-- **GCP project for Vertex AI:** `lab-viah` (region `us-central1`). Unchanged from Session 2.5.
-- **Last updated:** 2026-05-17 (late evening) by Session 3.
-- **Days remaining until 20 May submission:** ~3 (Sun late evening → Wed EOD).
+- **Project phase:** Session 4 COMPLETE AND VERIFIED LOCALLY (not pushed — same teammate-divergence story as Session 3). Service-orchestration layer fully wired: Wali + Booking + Dispute agents, book_meeting + handle_dispute workplans, /book/initiate + /book/confirm + /dispute/file + /feedback/post-meeting endpoints. End-to-end run against real Vertex + real Supabase completes successfully: meeting persisted in 'proposed' → 'confirmed' state, mock SMS rendered to both walis in EN + RO_UR, dispute mediated by Gemini Pro (severity 3 warning), Twin v2 forged with 8 weight shifts + refreshed system_prompt. 6/6 vitest happy-paths pass.
+- **Last commit landed locally this session:** *(filled in by post-commit follow-up — see Session 4 commit message below)*. Predecessor: `e199e92` (Session 3 fixup commit).
+- **Vertex quota uplift LANDED:** Billing enabled on `lab-viah` → 300 RPM on `gemini-pro` in `us-central1` (was hackathon-tier ~60 RPM). Burst smoke verified: 5-parallel × 8-dim find_matches workplan ran with **0 recoveries, 0 synthesis failures, 0 timeouts, 0 429s** (Session 3 baseline was 16 recoveries + 5/5 synthesis failures). MAX_CONCURRENT raised 3 → 10 in `src/agents/_shared/gemini.ts`; final-synthesis switched back to Pro. The Session 3 architecture (Flash on per-dim, unified 1-call-per-dim, thinkingBudget=0) is retained — it's no longer load-bearing but stays for safety.
+- **GCP project for Vertex AI:** `lab-viah` (region `us-central1`). Unchanged.
+- **Last updated:** 2026-05-18 by Session 4.
+- **Days remaining until 20 May submission:** ~2 (Mon → Wed EOD; feature freeze 11:00 AM Wed).
 
 ---
 
@@ -104,6 +104,22 @@
 - [x] **Onboarding routes** (`src/routes/onboarding.routes.ts`) — `POST /onboarding/layer1`, `layer2`, `layer3` (dual-mode: generate OR apply corrections by body shape), `wali`, `finalize`. All five gated by `requireUserId`; all five return `ApiResponse<T>` envelope; sessionId = flowId for SSE wiring.
 - [x] **Vitest test** (`tests/onboarding.test.ts`) — mocks Gemini + Supabase, exercises all 4 layers through the workplan helpers, asserts `TwinSpecSchema.parse(result.spec).success === true` and `traceEventCount >= 15`. Runs in ~25 ms.
 - [x] **End-to-end verified against real Gemini + real Supabase** — Layer 1 (Hadeed, 26, male, Karachi, practicing) → 4 follow-up turns → 3 scenario cards → Layer 3 generate + correct → Wali conflict (user=practicing, wali=strict) → Finalize → `twinId=811c9b47-…` persisted, `system_prompt` ~400 words, **71 trace events** (exit check needed ≥15 — 4.7× margin), `TwinSpecSchema.parse()` clean.
+
+**Session 4 (2026-05-18) — service orchestration layer:**
+
+- [x] **Vertex quota uplift validated.** User enabled GCP billing; `gemini-pro` quota in `us-central1` rose from hackathon-tier ~60 RPM to 300 RPM (5× headroom). Pre-Session-4 burst smoke ran `/match/request` end-to-end: 5 parallel debates × 8 dims = 40 calls under a 29.8s workplan with **0 recoveries, 0 timeouts, 0 429s, 0 synthesis failures** — the exact failure modes that drove the Session 3 mitigations. Architecture knobs adjusted: `MAX_CONCURRENT=3 → 10`, Moderator final-synthesis switched from Flash back to Pro (1 call per debate = 5 per workplan, low volume, big quality win). Session 3 wrappings (unified per-dim call, Flash on hot path, thinkingBudget=0) retained — no longer load-bearing but cheap to keep.
+- [x] **Mock SMS template renderer** (`src/tools/sms.template.ts`) — 6 templates × 3 languages = 18 hand-written strings (`wali_brief_intro`, `meeting_proposal`, `meeting_confirmed`, `meeting_reminder`, `dispute_filed`, `dispute_resolved`). GSM-7 vs Unicode segment counting (160 vs 70 chars/seg); cap = 4 segments (initially 2, bumped after the EN wali_brief landed at 3 segments due to em-dashes). Phone masking in trace events (`+92****1234`). Throws `BAD_REQUEST` on missing required vars. Pure async, emits `tool.call` + `tool.result`.
+- [x] **Calendar mock** (`src/tools/calendar.mock.ts`) — deterministic PRNG (mulberry32 seeded by sorted phone-pair hash) so the same wali pair always yields identical slot proposals → demo reproducibility. Weekday evenings + weekend afternoons in PKT (Asia/Karachi via `Intl.DateTimeFormat`); skips Jumma window 1-2:30 PM Friday. Returns 3 slots ranked by `min(userConf, candidateConf)` descending; both walis must score >0.5 confidence for a slot to be eligible.
+- [x] **Maps Places tool** (`src/tools/maps.ts`) — plain `fetch` against Places API v1 `places:searchText` (no SDK), `X-Goog-Api-Key` + field mask, `regionCode` PK/AE. 2 attempts × 500ms backoff × 8s per-attempt timeout. Fallback to hardcoded city venue list (Karachi/Lahore/Islamabad/Multan/Dubai — 3 real verifiable venues each) when (a) `GOOGLE_MAPS_API_KEY` missing, (b) both attempts fail, or (c) API returns fewer than `count` results. Every fallback branch emits a `recover` event with a specific reason — these are now the demo's Maps-visible-recovery moments.
+- [x] **TTS tool** (`src/tools/tts.ts`) — `@google-cloud/text-to-speech` (new dep — user pre-approved). Lazy client init so missing creds don't crash boot. Voice map: `ur-IN-Wavenet-A/B` for Urdu + Roman Urdu spoken brief, `en-US-Wavenet-D/F` for English. Output: base64 `data:audio/mp3` URI (no object storage round-trip → Expo plays it directly via expo-av). 2-attempt retry, 8s per-attempt timeout. Falls back to text-only with a `recover` event when (a) creds missing, (b) both attempts fail, (c) input empty.
+- [x] **Wali Agent** (`src/agents/wali.agent.ts`) + prompts (`src/content/prompts/wali.prompt.ts`) — generates structured rishta brief in EN + user's native language (UR or RO_UR), in parallel (2 of 10 Gemini slots). Pro tier, JSON-mode, 1400 maxOutput. Renders TTS audio in parallel after briefs land. Emits user-side wali SMS via `smsRender`. `fallbackBrief()` deterministically builds the brief from spec + report when Gemini fails for either language. Trilingual `LANGUAGE_INSTRUCTION` block in the prompt pins Nastaliq script for Urdu, Latin script + aap-form for RO_UR.
+- [x] **Booking Agent** (`src/agents/booking.agent.ts`) — two entries: `proposeSlots` (calendar + maps in parallel, pairs slot[i] with venue[i] by rank, builds `summary` strings), `finalizeMeeting` (locks chosen pair, computes reminder schedule 24h/2h/0.5h before slot). Handles "calendar produced <3 slots" via `recover` event (workplan still ships with whatever slots came back).
+- [x] **book_meeting workplan** (`src/workplans/book-meeting.workplan.ts`) — `startBookMeeting` (returns flowId + meetingIdPromise + outcome promise) + `confirmBookMeeting` (sync). Five tasks in initiate: load_context, wali_brief, propose_slots, persist_proposal; four in confirm: load_meeting, finalize_meeting, persist_confirmed, notify. Step 8 (notify) renders mock SMS to BOTH walis in user's native language via `meeting_confirmed` template. The proposal is stored in the `meetings.venue` jsonb under `proposed` + `context` fields; confirm overlays `chosen`.
+- [x] **Dispute Agent** (`src/agents/dispute.agent.ts`) + prompts (`src/content/prompts/dispute.prompt.ts`) + handle_dispute workplan (`src/workplans/handle-dispute.workplan.ts`) — single Gemini Pro call per filing, 1-5 severity, 5 action types (`no_action`/`warning`/`shadowban`/`flag_for_human_review`/`mutual_close`). Zod-validated `DisputeResolution` shape. When `escalated=true AND action=flag_for_human_review`, agent emits BOTH `decide` AND `recover` events ("contradictory accounts detected" → "flagging for human review") — this is the workplan's required visible-recovery moment per ANTIGRAVITY.md. `fallbackResolution()` deterministically escalates severity-4+ types (misrepresentation/no_show → shadowban; others → warning) on Gemini failure.
+- [x] **POST /book/initiate + /book/confirm** (`src/routes/booking.routes.ts`), **POST /dispute/file** (`src/routes/dispute.routes.ts`) — all gated by `requireUserId`, standard `ApiResponse<T>` envelope, Zod body validation. Wired into `src/server.ts`.
+- [x] **POST /feedback/post-meeting** (`src/routes/feedback.routes.ts`) + new Twin Forge entry `forgeTwinV2` (`src/agents/twin-forge.agent.ts`) — 4 ratings (truthfulness/chemistry/family_alignment/would_meet_again 1-5) + optional narrative. Deterministic `adjustWeightsFromFeedback` nudges weights up (capped at 0.4 per dim) when ratings ≤2, then renormalizes to sum=1.0. One Pro Gemini call refreshes the user's `system_prompt` with what they learned from the meeting; fallback appends a deterministic note. Inserts a NEW twins row with `version+1` (history preserved) and flips meeting status to `'completed'`. No workplan/trace per ANTIGRAVITY.md §8 (single-Gemini-call CRUD-ish endpoint).
+- [x] **Vitest happy-path tests** — `tests/wali.test.ts` + `tests/booking.test.ts` + `tests/dispute.test.ts`. Each mocks Gemini + Supabase (+ tts/sms/calendar/maps as relevant) and exercises the agent's primary entry point. **6/6 tests pass** (3 new + 3 from prior sessions).
+- [x] **End-to-end verified against live Vertex + Supabase**: `/book/initiate` → meetingId returned + meeting row persisted in 'proposed' state with EN + RO_UR brief documents, audio_dataUri set for both, 4 mock SMS rendered (2 walis × 2 languages). `/book/confirm` → slot locked (Sunday 24 May 5 PM PKT at Xander's Cafe, DHA Phase 6), status='confirmed', 5 reminders scheduled, 2 confirmation SMS rendered. `/dispute/file` → Gemini Pro mediated severity 3 / warning, -0.1 reputation impact on counterparty, NOT escalated (single narrative), rationale text in the response. `/feedback/post-meeting` (chemistry=2, family_alignment=2) → Twin v2 forged (`newTwinId` returned, version=2), 8 dimension weights shifted (family +0.036, conflict +0.020, deen -0.013 by renormalization), `system_prompt` refreshed via Pro (`systemPromptRefreshed=true`). Meeting flipped to 'completed'.
 
 **Session 3 (2026-05-17, late evening) — HERO DAY: matching subsystem:**
 
@@ -314,6 +330,13 @@ npm run test
 - **2026-05-17 (Session 3) — Hero candidate "Hina Raza"** is intentionally built to score high in the baseline cosine ranker but trigger a dealbreaker in the agentic debate. Five-year past public relationship is in her `dealbreakers` array; users with "no prior relationship" dealbreakers see her sink in agentic mode but win in baseline. Demonstrates the §11 Day 3 exit check ("hero scenario C") at the data level.
 - **2026-05-17 (Session 3) — Local-only commit; do NOT push.** Teammate pushed their Session 3-5 work to `origin/backend/main` using Flash; user does not trust those builds. This branch's Session 3 work stays local until the user decides how to reconcile (likely a `git reset --hard <this-commit>` against the teammate's HEAD or a force-push after review — user's call, not ours).
 
+- **2026-05-18 (Session 4) — `MAX_CONCURRENT=3 → 10` and Moderator final-synthesis back on Pro** after billing-enabled Vertex quota uplift to 300 RPM. Pre-Session-4 burst smoke: 0 recoveries, 0 timeouts, 0 429s, 0 synthesis failures across a 40-call workplan (vs Session 3's 16 recoveries + 5/5 synth fallbacks). The Session 3 architecture (unified per-dim call, Flash on hot path, thinkingBudget=0) is RETAINED — it's no longer load-bearing but stays as a safety net if quota is ever pulled. To temporarily revert: flip `MAX_CONCURRENT` back to 3 in `src/agents/_shared/gemini.ts` and `modelTier` from `'pro'` to `'flash'` on Moderator final-synthesis (single Edit at the `runFinalSynthesis` call).
+- **2026-05-18 (Session 4) — TTS dep `@google-cloud/text-to-speech` added.** Approved by user before install. Uses the same `GOOGLE_APPLICATION_CREDENTIALS` ADC as Vertex (no new env var). Output is a base64 `data:audio/mp3` URI so the mobile client plays it directly via expo-av — no Supabase Storage / object hosting round trip. SA needs `Cloud Text-to-Speech User` role (or `Cloud Text-to-Speech Service Agent`).
+- **2026-05-18 (Session 4) — Wali Agent: Pro-tier Gemini for both EN and native (UR/RO_UR) briefs, run in parallel.** 2 calls per book_meeting flow, low volume, Urdu quality matters. JSON-mode with Zod schema. Deterministic `fallbackBrief()` per language produces a usable rishta-letter-style document from spec + report when Gemini fails.
+- **2026-05-18 (Session 4) — Wali briefs are addressed to the USER's wali only.** SMS to BOTH walis are rendered (user-side from Wali Agent, candidate-side from the book_meeting workplan layer), but the brief document itself frames the user's wali as the recipient. Cross-wali contact is the workplan's responsibility, not the agent's. Keeps the agent's job tightly scoped.
+- **2026-05-18 (Session 4) — Booking proposals are stored in `meetings.venue` jsonb** under `proposed` array + `context` (user/candidate names, language, city, area). `/book/confirm` overlays `chosen: {slotIso, venue, chosenIndex}` on the same jsonb. Single jsonb merge per confirm — no new tables. Schema unchanged.
+- **2026-05-18 (Session 4) — Post-meeting feedback bypasses the workplan/trace machinery.** Per ANTIGRAVITY.md §8 (CRUD-ish endpoints don't need workplans). One Gemini Pro call to refresh `system_prompt`, deterministic weight nudges, single twins row insert. Decision log lives in pino structured JSON, not the trace table. The Twin Forge "v2" semantic is preserved — `forgeTwinV2` is exported from `twin-forge.agent.ts` and is the only path that increments `TwinSpec.version`.
+- **2026-05-18 (Session 4) — SMS segment cap = 4 (was 2).** Initial 2-segment cap was too aggressive: a single EN `wali_brief_intro` lands at ~194 chars / 3 segments (Unicode em-dash drops the per-segment cap from 160 to 70). Real rishta-grade SMS routinely span 3-4 segments. Cap stays in place to catch runaway template bugs.
 - **2026-05-17 (Session 2.5) — LLM backend = Vertex AI via `@google/genai`, NOT Google AI Studio.** Rationale: AI Studio's free-tier quota for Gemini 3 Pro is `limit: 0`; every Pro call 429s and falls back to Flash. Vertex bills via GCP — $5 free credit covers >>this hackathon. SDK is `@google/genai` v1+ (not the deprecated `@google-cloud/vertexai`, which is removed 2026-06-24). Auth via Application Default Credentials reading `GOOGLE_APPLICATION_CREDENTIALS` — same service-account JSON used by STT/TTS. Project `lab-viah` / region `us-central1`. Service account needs the `Vertex AI User` IAM role. Public API of `geminiCall(input, bus)` is unchanged — every Session-2 caller works without modification.
 
 ---
@@ -323,23 +346,23 @@ npm run test
 > **Last session's handoff lives here.** Read this first thing.
 > Replace this section at the end of each session.
 
-### Handoff from Session 3 → Session 4
+### Handoff from Session 4 → Session 5 (ship day)
 
 **Where the code is on disk:**
 
 - Live working copy: `D:\Projects\rishtaai\backend\` (clone of `https://github.com/ZakiNabeel/Lab-Viah.git`, branch `backend/main`).
-- Session 3 commit: will be filled in after `git commit` at end of this session. Message starts with `session 3:`. **NOT PUSHED** — see "Anything weird" below.
+- Session 4 commit: filled in by the post-commit follow-up. Message starts with `session 4:`. **NOT PUSHED** (teammate divergence — same story as Session 3).
 
-**Before doing anything in Session 4:**
+**Before doing anything in Session 5:**
 
-1. **Do NOT pull.** `origin/backend/main` contains the teammate's parallel Session 3-5 work (using Gemini Flash everywhere via the original `@google/generative-ai` AI Studio path, per user's note). The user does not trust those builds. Stay on this local branch's HEAD.
-2. **The dev server may still be running** from Session 3 — `curl http://localhost:3000/health` returns 200 in ~10 ms when it is. Restart fresh (`npm run dev`) if it crashed during overnight idle. Port 3000 can hang in TIME_WAIT; if `EADDRINUSE` shows up, `netstat -ano | grep ':3000'` then `Stop-Process -Id <pid> -Force` clears it.
-3. **Vertex is healthy** — Session 3's smoke run hit `gemini-2.5-flash` with `thinkingBudget: 0` cleanly. `/health/deep` should still return `gemini.ok: true` (note `modelUsed: gemini-2.5-flash` if the smoke happened to be the most recent call; the wrapper picks the tier dynamically).
-4. **Candidates are seeded.** 12 rows in `twins` with `is_candidate=true`. Re-running `npm run seed` is idempotent (upsert by stable UUID) — only re-run if `src/content/candidates.ts` changes.
-5. **Schema is up-to-date.** `compatibility_reports.flow_id` column was added live. If a Session 4 dev does a fresh Supabase deploy, `schema.sql` covers it via additive `alter table ... if not exists`.
-6. Re-read MASTERPLAN sections 5.6, 5.7, 5.8, 7 (booking + dispute + feedback rows), 8.3, 8.4, 11 (Day 4).
+1. **Do NOT pull or push.** `origin/backend/main` still has the teammate's parallel Session 3-5 work using AI Studio + Flash. User reconciles at submission time.
+2. **Dev server is probably still running** from Session 4. `curl http://localhost:3000/health` confirms (200 in ~10 ms). If it crashed, `npm run dev` (tsx watch auto-reloads on edits). Port 3000 → `netstat -ano | grep ':3000'` + `Stop-Process -Id <pid> -Force` if EADDRINUSE.
+3. **Vertex is healthy + quota uplifted to 300 RPM.** `/health/deep` returns `gemini.ok: true` (modelUsed flips between Pro and Flash depending on what the smoke fires). Burst behaviour: clean, no 429s under 5-parallel × 8-dim workload.
+4. **Candidates seeded, schema up to date.** No new migrations needed in Session 5 unless we wire pgvector embeddings (deferred).
+5. **6/6 vitest tests pass.** `npm test` runs in ~6 s.
+6. **Re-read MASTERPLAN §12 (DoD), §13 (out of scope), §14 (cost/scalability), §11 Day 5.** Session 5 is polish + deploy + trace export + README pass + cost doc — no new endpoints.
 
-**Smoke-test commands (Session 3 matching flow, ~30 s against live services):**
+**End-to-end smoke commands (full Day 4 journey, ~1 minute):**
 
 ```bash
 JWT=$(curl -s -X POST http://localhost:3000/auth/otp/verify \
@@ -347,49 +370,60 @@ JWT=$(curl -s -X POST http://localhost:3000/auth/otp/verify \
   -d '{"phone":"+923001234567","otp":"123456"}' \
   | grep -oE '"access_token":"[^"]+' | head -1 | cut -d'"' -f4)
 
+# Matching (Session 3)
 RESP=$(curl -s -X POST http://localhost:3000/match/request \
   -H "content-type: application/json" -H "authorization: Bearer $JWT" -d '{}')
 FLOW=$(echo "$RESP" | grep -oE '"flowId":"[^"]+' | cut -d'"' -f4)
+curl -N -s "http://localhost:3000/stream/$FLOW" | head -200    # 29s workplan
 
-# Watch the live debate stream (workplan finishes in ~30s)
-curl -N -s "http://localhost:3000/stream/$FLOW"
+# Booking initiate
+BOOK=$(curl -s -X POST http://localhost:3000/book/initiate \
+  -H "content-type: application/json" -H "authorization: Bearer $JWT" \
+  -d '{"candidateTwinId":"11111111-1111-4111-8111-111111111111","userWaliName":"Uncle Ahmed","userWaliRelation":"uncle","userWaliPhone":"+923001112222","candidateWaliName":"Father Khan","candidateWaliPhone":"+923009998888"}')
+MEET=$(echo "$BOOK" | grep -oE '"meetingId":"[^"]+' | cut -d'"' -f4)
 
-# Fetch persisted reports
-curl -s -H "authorization: Bearer $JWT" \
-  "http://localhost:3000/match/results/$FLOW" | head -c 4000
+# Booking confirm
+curl -s -X POST http://localhost:3000/book/confirm \
+  -H "content-type: application/json" -H "authorization: Bearer $JWT" \
+  -d "{\"meetingId\":\"$MEET\",\"slotIndex\":0}"
 
-# Baseline (non-agentic) ranking — same input, no debate
-curl -s -H "authorization: Bearer $JWT" \
-  "http://localhost:3000/baseline/match"
+# Dispute file (Gemini Pro mediation)
+curl -s -X POST http://localhost:3000/dispute/file \
+  -H "content-type: application/json" -H "authorization: Bearer $JWT" \
+  -d "{\"meetingId\":\"$MEET\",\"filedBy\":\"user\",\"type\":\"no_show\",\"narrative\":\"Candidate did not show up.\"}"
+
+# Post-meeting feedback → Twin v2
+curl -s -X POST http://localhost:3000/feedback/post-meeting \
+  -H "content-type: application/json" -H "authorization: Bearer $JWT" \
+  -d "{\"meetingId\":\"$MEET\",\"truthfulness\":4,\"chemistry\":2,\"family_alignment\":2,\"would_meet_again\":3}"
 ```
 
-**Useful entry points for Session 4 work:**
+**Useful entry points for Session 5 work (Day 5 polish + deploy):**
 
-- **Wali Agent** (`src/agents/wali.agent.ts`, MASTERPLAN §5.6) — does NOT exist yet. Generate Urdu + English rishta brief from a `CompatibilityReport`. Wire TTS audio URL (real `@google-cloud/text-to-speech`, dep TBD). Mock SMS via `src/tools/sms.template.ts` (pure renderer, no real send).
-- **Booking Agent** (`src/agents/booking.agent.ts`, MASTERPLAN §5.7) — does NOT exist yet. Slot proposal + Google Maps Places lookup + meeting card + calendar mock. Three slots, three venues, hardcoded city-specific fallback list in `src/tools/maps.ts`.
-- **Dispute Agent** (`src/agents/dispute.agent.ts`, MASTERPLAN §5.8) — does NOT exist yet. Severity classifier, reputation impact, contradictory-account flag-for-human-review.
-- **Post-meeting feedback endpoint** (`POST /feedback/post-meeting`) — feeds Twin Forge to produce Twin v2 (update existing twin row, bump version int). Twin Forge already supports this via the existing `forgeTwin` entry point — pass a session with the new feedback as wali_input-like deltas.
-- **Reuse the trace patterns from `find-matches.workplan.ts`** — `startTrace('book_meeting', {...})`, parallel sub-tasks if needed, `endTrace(bus, outcome)`. The SSE endpoint and TraceBus are already plumbed.
-- **`POST /book/initiate` and `POST /book/confirm`** — wire similarly to `POST /match/request`. flowId returned synchronously; workplan runs async; client subscribes to `/stream/:flowId`.
-- **`POST /dispute/file`** — same pattern.
+- **Trace export script** — `scripts/export-traces.ts` (MASTERPLAN §7 / ANTIGRAVITY.md §7). Does NOT exist yet. Read the `traces` table and dump 4-5 JSONL files into `traces/` (one per workplan + one for the visible-recovery exemplar). The `traces.events` jsonb is already chronological per `bus.events()`.
+- **Deploy to Railway** — `npm start` (uses compiled dist via `tsc`). Need to provide env vars in Railway UI. Cold start: first Vertex call ~4 s incl. ADC handshake.
+- **README polish** — MASTERPLAN §11 Day 5 lists what goes in: architecture diagram, data schemas, tools/APIs, Antigravity role, setup, assumptions, privacy, cost, scalability, baseline comparison, limitations.
+- **Pre-cached hero scenarios** — judges may run the demo against flaky live services. Cache one find_matches flow + one book_meeting flow as JSONL fixtures the mobile UI can replay. Files would live in `traces/hero/*.jsonl`.
+- **`/twin/me` endpoint** — MASTERPLAN §7 lists it. Not built yet. Trivial: GET handler that loads the latest twin row for the user and returns `spec`. Should land in Session 5.
+- **STT real wire-up** (`src/tools/stt.ts` is still a stub) — `@google-cloud/speech` dep + replace `attemptStt` body. ~30 min of work. Optional polish.
+- **Tag release `v1.0.0-hackathon`** after deploy verification.
 
-**Half-finished work / things to know:**
+**Half-finished work / things to know going into Session 5:**
 
-- **Nothing is half-finished.** Session 3 closed cleanly: typecheck clean, 3/3 tests pass, end-to-end verified against live Vertex+Supabase with 40/40 dimensions scored and persisted reports for 5 candidates.
-- **User Twin + Candidate Twin agent files exist but are not on the workplan critical path.** The Moderator uses a unified 1-call-per-dim flow. The per-twin agents (`runTwinTurn`, `userTwinTurn`, `candidateTwinTurn`) are still exported and would work standalone — Session 4 / 5 could use them if a Wali/Dispute flow wants to give one Twin "the floor" without the Moderator scoring the exchange.
-- **`final-synthesis Gemini call failed` fired 5/5 in the verified smoke run** — this is the `buildFinalSynthesisPrompt` for the per-debate top_strengths/top_friction_points narrative. The recovery (`fallbackHighlights`) produces sensible 3+3 phrases from the dim scores, so the report is still useful, but the highlights are deterministic-looking rather than LLM-prose. Worth investigating in Session 5 polish — likely solution: move synthesis off the per-debate critical path and run it after persistence, or switch synthesis specifically to Pro (smaller call volume, can afford the latency).
-- **STT is still a stub.** Carried forward from Session 2. Defer to Session 5 polish.
-- **`tools/sms.template.ts`, `tools/maps.ts`, `tools/calendar.mock.ts`, `tools/tts.ts`** — referenced in MASTERPLAN §4 file layout but do NOT exist yet. Session 4 creates them.
-- **`compatibility_reports.flow_id`** was added via SQL Editor; the schema.sql file has the `alter table ... if not exists` so re-applying the schema is safe.
+- **`/stream/:flowId` for `/book/initiate` only catches the workplan.finished event**, because `/book/initiate` awaits `meetingIdPromise` (which resolves after step 5 = workplan end) BEFORE returning. By the time the client subscribes to SSE, the bus is already closed. For `/match/request` this isn't an issue (the route returns flowId BEFORE work starts). Demo workaround: either (a) return flowId synchronously then a follow-up poll for meetingId, or (b) accept that book_meeting trace is read from the `traces` Supabase row, not live SSE. The trace IS persisted in DB regardless.
+- **No `/feedback/post-meeting` trace.** Decision made deliberately — it's a CRUD-ish endpoint with one Gemini call. Pino structured logs cover decision auditing. If the demo needs visible Twin-Forge-update events, wrap it in a thin workplan in Session 5 (would require adding `feedback_post_meeting` to the `WorkplanName` enum).
+- **`/book/confirm` venue text** shows the locked venue (e.g. "Xander's Cafe, DHA Phase 6") — the slot text uses `Intl.DateTimeFormat('en-PK', { timeZone: 'Asia/Karachi' })` which on Windows Node may render slightly differently than Linux Railway. Spot-check in Session 5 once deployed.
+- **`forgeTwinV2` always uses Pro Gemini** — one call per feedback submission, low volume. No fallback to Flash for cost. If Vertex quota is ever revoked, change `modelTier: 'pro'` → `'flash'` in twin-forge.agent.ts § "4. Post-meeting feedback".
+- **STT stub stays for now.** The chip-based fallback in Onboarding Agent IS the demo's visible recovery for STT — Session 4 didn't touch it.
+- **The `ivfflat` index in `schema.sql` is still on an empty `embedding` column.** Real embeddings are a Session 5 polish item if we want to demo "agentic prescreen" vs "baseline prescreen" distinction.
 
-**Anything weird:**
+**Anything weird going into Session 5:**
 
-- **`origin/backend/main` is ahead of this local branch with teammate's commits.** The teammate's Session 3-5 used Gemini Flash via Google AI Studio (not Vertex). User does not trust those builds. Decision deferred to user — likely a hard reset of `origin/backend/main` to this branch's HEAD after Sessions 4-5 land, then a force-push. Until then, **NEVER `git pull` or `git push`** without checking with the user.
-- **Vertex hackathon-tier quota is the architecture's load-bearing constraint.** Three knobs in `src/agents/_shared/gemini.ts` keep us inside it: `MAX_CONCURRENT=3`, `PRIMARY_TIMEOUT_MS=12_000`, `PRIMARY_ATTEMPTS=2`. If Session 4 adds more parallel Gemini calls (e.g. Wali brief in both EN+UR concurrently, or Booking proposing 3 slots in parallel), they share the same 3-slot semaphore. Plan around that. Bumping the cap will start 429-storming again.
-- **MASTERPLAN §8.2's 30s end-to-end budget is exceeded.** Actual workplan latency ~30 s for the matching flow, which is on-spec, but the per-debate-budget is 60 s and the workplan ceiling is 90 s. Documented and accepted; production quota uplift would land everything back in spec.
-- **Empty `final_synthesis` Pro upgrade for Session 5** — synthesis is 1 call per debate (5 calls per workplan total). Pro would land within budget for that call count and would produce nicer top_strengths phrases. Easy win for the demo if you have time.
-- **The `agent.message` events for the live debate** are synthesized BY the Moderator from the unified-call response — they're not separate Gemini calls. Mobile UI shouldn't notice; the SSE event shape is unchanged.
-- **The `ivfflat` index in `schema.sql` is still created on an empty `embedding` column.** Candidates are seeded with `embedding=NULL`. Run `REINDEX INDEX twins_embedding_idx;` in Supabase SQL Editor only if Session 5 wires real embeddings.
+- **Branch divergence (HIGH risk).** `origin/backend/main` is ahead with teammate's Sessions 3-5 (Flash/AI-Studio). User reconciles at submission time. NEVER pull/push from this branch without explicit instruction.
+- **TTS Urdu voice quality untested in production audio.** The `data:audio/mp3;base64,...` URI from `ur-IN-Wavenet-B` plays fine in Chrome desktop on dev box, but mobile playback through expo-av should be smoke-tested by frontend team before demo. Fallback (text-only) is already wired.
+- **Maps Places API key not set in `.env`.** Fallback list fires every time → "Xander's Cafe" / "Cafe Aylanto" / etc. Per MASTERPLAN §9 this is the documented fallback path — the trace shows it as a `recover` event so judges can see the failure handling. If we want REAL venue data for the demo, drop a Maps API key into `.env` (the code path is wired and tested-by-typecheck).
+- **The Wali brief Urdu rendering** uses the prompt's "TARGET LANGUAGE: Urdu (Nastaliq)" instruction — actual Urdu quality depends on Gemini 2.5 Pro's Urdu output. Spot-checked once in dev: the salutation + headline came out correctly in Nastaliq. Frontend team should verify glyph rendering on iOS/Android before demo (especially Android with no Urdu font fallback).
+- **Schema `meetings.venue` jsonb is heavily overloaded** in this build — stores `proposed[]`, `chosen`, `context`, AND `briefs[]` (with audio metadata) in one column. Works for hackathon scale. Production would split this into a `meeting_proposals` child table.
 
 ---
 
@@ -413,14 +447,18 @@ These have come up and been deferred. Do not silently build them.
 | Antigravity workplan auth/setup eats Day 1 | mitigated | ANTIGRAVITY.md drafted and trace contract locked in Session 1. |
 | Gemini Pro free-tier quota = 0 (Session 2 finding) | **RESOLVED Session 2.5** | Swapped LLM backend from AI Studio → Vertex AI on project `lab-viah`. `gemini-2.5-pro` verified live via `/health/deep`. $5 GCP free credit covers a multi-thousand-call hackathon. |
 | Vertex AI cold-start latency | open, low severity | First Gemini call after server boot incl. auth handshake takes ~4 s; warm calls ~1.5–2 s. Mitigation: pre-warm via `/health/deep` at server start, or simply accept first-call cost. Within MASTERPLAN §9 budget. |
-| Vertex hackathon-tier 429s under burst load (Session 3 finding) | **MITIGATED Session 3** | `lab-viah` cannot sustain 5-parallel × 3-calls-per-dim Pro bursts. Mitigations live in `src/agents/_shared/gemini.ts`: global semaphore cap=3, 12 s timeout, 2 attempts with 1.2 s 429-aware exponential backoff, Flash-only on per-dim + synthesis calls. Plus the Moderator now does 1 call per dim (down from 3). Verified: 16 isolated recoveries in the 30 s smoke run, no cascading failures. Production quota uplift would let us raise the cap and re-enable Pro on scoring. |
-| Final-synthesis Gemini call fails 5/5 under load | open, low severity | All 5 per-debate synthesis calls fell back to `fallbackHighlights` (deterministic top-strengths/friction-points from the dim scores) in the Session 3 smoke. Demo is still coherent — the highlights look reasonable — but they're not LLM-authored. Session 5 polish: either move synthesis off the per-debate critical path (run after persistence) OR switch synthesis to Pro (low call volume, can afford the latency). |
+| Vertex hackathon-tier 429s under burst load (Session 3 finding) | **RESOLVED Session 4** | User enabled GCP billing → 300 RPM on `gemini-pro` in `us-central1` (5× the hackathon-tier ceiling). Session 4 burst smoke (5-parallel × 8-dim): 0 recoveries, 0 timeouts, 0 429s, 0 synthesis failures. `MAX_CONCURRENT` raised 3 → 10. Session 3 wrappings (unified per-dim call, Flash hot path, thinkingBudget=0) retained as belt-and-suspenders. |
+| Final-synthesis Gemini call fails 5/5 under load | **RESOLVED Session 4** | Moderator final-synthesis switched back from Flash to Pro after quota uplift. Burst smoke confirms 5/5 synthesis calls land cleanly with narrative `top_strengths` / `top_friction_points`. The deterministic `fallbackHighlights` path stays in place as a recovery branch (still emits if Pro fails). |
 | Gemini latency >5s in Moderator | open, mitigated | Per-dim Flash call lands in 1-3 s when not 429'd; tight 12 s timeout caps the worst case. Pro→Flash fallback inside `geminiCall` still available if a Session 4 call uses tier='pro' and fails. Pre-cache hero scenarios in Session 5. |
 | Cloud STT poor on Roman Urdu | mitigated for now | Chip-based fallback IS the recovery path; STT itself is a stub. Real STT wireup is Session 5 polish (needs `@google-cloud/speech` dep). |
 | Frontend integration mismatch | mitigated for SSE | `demo_*` flowId heartbeat (Session 1) + every `/onboarding/*` route returns `flowId === sessionId` so frontend can subscribe to `GET /stream/:flowId` for the live trace. Full OpenAPI-style spec still due end of Session 4. |
 | Supabase free tier rate limits | open | Self-host fallback ready (out of scope unless triggered). |
 | Demo flakiness during recording | open | Pre-record hero debate, run cached version Day 5. |
 | Schedule risk — 3 calendar days remaining | open, on-track | Session 3 (HERO DAY) shipped: matching subsystem end-to-end with live SSE debate, persisted reports, baseline comparison, agentic uplift visible in the data. User's veto on scope cuts stands. Re-evaluate at Session 4 end. |
+| Schedule risk — 2 calendar days remaining post-Session-4 | open, on-track | Session 4 shipped: all 8 agents + 4 workplans + 14 of 15 endpoints (`/twin/me` missing — deferred to Session 5). 6/6 tests pass. End-to-end live-verified: match → book → confirm → dispute → feedback → Twin v2. Session 5 = polish + deploy + trace export + README + cost doc. Hard stop 11 AM Wed 20 May. |
+| /book/initiate SSE catches only workplan.finished | open, low severity | The route awaits the meetings-row insert before returning flowId, so by the time the mobile client subscribes to `/stream/:flowId` the bus has already closed. Trace IS persisted in the `traces` table. Session 5 polish: either decouple meetingId promise from initial response OR accept book_meeting trace is read post-hoc. |
+| TTS Urdu output untested on mobile | open, low severity | `ur-IN-Wavenet-B` confirmed plays back in dev browser; mobile playback via expo-av needs frontend smoke test before demo. Fallback to text-only is wired. |
+| `meetings.venue` jsonb is overloaded | open, accepted | Single column carries `proposed[]`, `chosen`, `context`, AND `briefs[]` with audio metadata. Hackathon-scale acceptable; production would split into `meeting_proposals` child table. |
 | Git push deferred | open, INTENTIONAL | Session 3 commits stay LOCAL until user reconciles with teammate's parallel push to `origin/backend/main`. The teammate pushed Session 3-5 using Flash via AI Studio; user does not trust those builds. NEVER push from this branch without explicit user instruction. |
 | Branch divergence from `origin/backend/main` | open, HIGH | `origin/backend/main` is ahead with the teammate's Session 3-5 work. Reconciliation strategy (force-push this branch vs cherry-pick teammate's stuff vs merge) is the user's decision. Until then, this branch is the source of truth for the user's preferred Vertex/Pro-capable architecture. |
 | Twilio not wired | open, mitigated for dev | Dev bypass works; Session 5 polish for live OTP. |
@@ -429,4 +467,4 @@ These have come up and been deferred. Do not silently build them.
 
 ---
 
-*End of SESSION_CONTEXT. Last touched: 2026-05-17 (late evening) by Session 2.5 (Vertex AI swap). Next read: at start of Session 3.*
+*End of SESSION_CONTEXT. Last touched: 2026-05-18 by Session 4 (service orchestration layer). Next read: at start of Session 5 (ship day).*
