@@ -159,7 +159,13 @@ export async function runOnboardingTurn(
       prompt,
       systemInstruction: systemPrompt,
       temperature: 0.4,
-      maxOutputTokens: 768,
+      // Gemini 2.5 Pro spends most of its budget on invisible "thinking"
+      // before emitting any visible token. With 768 the visible reply was
+      // truncated mid-string (~40-80 chars) and the JSON parser fell through
+      // to chip-fallback every turn — making the chat feel "frozen". 2048
+      // sits comfortably above observed thinking budgets without paying for
+      // verbose replies (the schema's reply field caps the visible length).
+      maxOutputTokens: 2048,
       responseFormat: 'json',
     },
     bus

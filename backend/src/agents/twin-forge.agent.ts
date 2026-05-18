@@ -53,7 +53,11 @@ export async function generateLayer3Statements(
     {
       prompt: buildTwinStatementsPrompt(session),
       temperature: 0.6,
-      maxOutputTokens: 768,
+      // Same thinking-budget headroom as onboarding.agent.ts — Pro consumes
+      // most of a small budget on invisible reasoning, truncating the visible
+      // JSON. 768 was observed cutting Layer-3 statements mid-sentence; 2048
+      // clears the budget while still letting the response stay tight.
+      maxOutputTokens: 2048,
       responseFormat: 'json',
     },
     bus
