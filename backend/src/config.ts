@@ -17,6 +17,22 @@ if (process.env['GOOGLE_APPLICATION_CREDENTIALS_JSON'] && !process.env['GOOGLE_A
 }
 
 import { z } from 'zod';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+// Self-healing check: If GOOGLE_APPLICATION_CREDENTIALS contains the raw GCP JSON key string,
+// write it to a temporary file in the container and point the env variable to that file path.
+// This allows pasting the raw JSON directly into the Railway dashboard.
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim().startsWith('{')) {
+  try {
+    const tempFilePath = path.join(os.tmpdir(), 'gcp-creds.json');
+    fs.writeFileSync(tempFilePath, process.env.GOOGLE_APPLICATION_CREDENTIALS.trim(), 'utf8');
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = tempFilePath;
+  } catch (err) {
+    console.error('Failed to write GOOGLE_APPLICATION_CREDENTIALS JSON to temp file:', err);
+  }
+}
 
 const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),

@@ -11,3 +11,6 @@ process.env.GCP_LOCATION ??= 'us-central1';
 process.env.VERTEX_MODEL_PRIMARY ??= 'gemini-2.5-pro';
 process.env.VERTEX_MODEL_FALLBACK ??= 'gemini-2.5-flash';
 process.env.GOOGLE_APPLICATION_CREDENTIALS ??= 'placeholder-creds.json';
+import ws from 'ws';
+
+globalThis.WebSocket = ws as any;

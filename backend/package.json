@@ -5,7 +5,7 @@
   "description": "RishtaAI backend — 8-agent matchmaking orchestrated inside Google Antigravity. Google Antigravity Hackathon 2026, Challenge 2.",
   "type": "module",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "dev": "tsx watch --env-file=.env src/server.ts",
