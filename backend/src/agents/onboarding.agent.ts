@@ -9,6 +9,7 @@ import { geminiCall } from './_shared/gemini.js';
 import { decide, obs, recover, type TraceBus } from './_shared/trace.js';
 import { AppError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
+import { repairTruncatedJson } from '../utils/jsonRepair.js';
 import { sttTranscribe } from '../tools/stt.js';
 import {
   buildOnboardingSystemPrompt,
@@ -162,10 +163,13 @@ export async function runOnboardingTurn(
       // Gemini 2.5 Pro spends most of its budget on invisible "thinking"
       // before emitting any visible token. With 768 the visible reply was
       // truncated mid-string (~40-80 chars) and the JSON parser fell through
-      // to chip-fallback every turn — making the chat feel "frozen". 2048
-      // sits comfortably above observed thinking budgets without paying for
-      // verbose replies (the schema's reply field caps the visible length).
-      maxOutputTokens: 2048,
+      // to chip-fallback every turn — making the chat feel "frozen". 4096
+      // sits comfortably above observed thinking budgets and matches the
+      // headroom we give Layer-3 statements + moderator synthesis. Even at
+      // 2048 we still saw "Unterminated string in JSON at position 36-45"
+      // on demo-day Layer-1 turns; bumping + jsonRepair fallback eliminates
+      // the chip-fallback every-turn pattern.
+      maxOutputTokens: 4096,
       responseFormat: 'json',
     },
     bus
@@ -174,25 +178,39 @@ export async function runOnboardingTurn(
   let parsed: z.infer<typeof TurnOutputSchema>;
   try {
     parsed = TurnOutputSchema.parse(JSON.parse(gem.text));
-  } catch (err) {
-    logger.warn(
-      { err, raw: gem.text.slice(0, 400) },
-      'onboarding agent: Gemini response failed schema; retrying once with chip-fallback'
-    );
-    recover(
-      bus,
-      'malformed JSON from Gemini onboarding turn',
-      'returning chip_options instead of free-text reply'
-    );
-    return {
-      reply: chipFallbackReply(session.language),
-      extracted: {},
-      confidence: 0,
-      next_topic: pickNextTopic(session),
-      chip_options: chipOptionsFor(session),
-      ...(sttConfidence !== undefined ? { sttConfidence } : {}),
-      ...(sttStub !== undefined ? { sttStub } : {}),
-    };
+  } catch (firstErr) {
+    // Pro burns thinking tokens against the same budget as the visible
+    // reply, so the visible JSON sometimes cuts off mid-string. Try to
+    // close strings + brackets before falling through to chip-fallback —
+    // recovers a usable turn 80%+ of the time and keeps the chat flowing.
+    try {
+      const repaired = repairTruncatedJson(gem.text);
+      parsed = TurnOutputSchema.parse(JSON.parse(repaired));
+      recover(
+        bus,
+        'Layer-1 JSON truncated by Gemini',
+        'parsed after closing unterminated string/object — using repaired turn'
+      );
+    } catch (secondErr) {
+      logger.warn(
+        { firstErr, secondErr, raw: gem.text.slice(0, 400) },
+        'onboarding agent: Gemini response failed schema even after repair'
+      );
+      recover(
+        bus,
+        'malformed JSON from Gemini onboarding turn (repair unsuccessful)',
+        'returning chip_options instead of free-text reply'
+      );
+      return {
+        reply: chipFallbackReply(session.language),
+        extracted: {},
+        confidence: 0,
+        next_topic: pickNextTopic(session),
+        chip_options: chipOptionsFor(session),
+        ...(sttConfidence !== undefined ? { sttConfidence } : {}),
+        ...(sttStub !== undefined ? { sttStub } : {}),
+      };
+    }
   }
 
   if (parsed.confidence < LOW_LLM_CONFIDENCE && !parsed.chip_options?.length) {
