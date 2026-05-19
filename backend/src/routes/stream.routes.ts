@@ -27,20 +27,40 @@ export const streamRoutes: FastifyPluginAsync = async (app: FastifyInstance) => 
     }
     const { flowId } = parsed.data;
 
+    // Tell Fastify we're taking over the response. Without this, returning
+    // from the handler triggers Fastify's normal send() path AFTER we've
+    // already written headers + SSE frames via reply.raw — surfacing as
+    // ERR_HTTP_HEADERS_SENT and tearing the connection mid-flight.
+    reply.hijack();
+
     reply.raw.setHeader('Content-Type', 'text/event-stream');
     reply.raw.setHeader('Cache-Control', 'no-cache, no-transform');
     reply.raw.setHeader('Connection', 'keep-alive');
     reply.raw.setHeader('X-Accel-Buffering', 'no');
     reply.raw.flushHeaders?.();
 
+    let ended = false;
     const send = (event: TraceEvent | { type: 'heartbeat'; ts: number }) => {
+      if (ended) return;
       reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
     };
 
     // 15s comment-ping to keep proxies from closing the connection.
     const keepalive = setInterval(() => {
+      if (ended) return;
       reply.raw.write(':\n\n');
     }, 15_000);
+
+    const endOnce = () => {
+      if (ended) return;
+      ended = true;
+      clearInterval(keepalive);
+      try {
+        reply.raw.end();
+      } catch {
+        // raw socket may already be torn down — ignore.
+      }
+    };
 
     if (flowId.startsWith('demo_')) {
       // Session 1 heartbeat path. Stops itself after 30s so test runs don't hang.
@@ -50,8 +70,7 @@ export const streamRoutes: FastifyPluginAsync = async (app: FastifyInstance) => 
         const elapsed = Date.now() - start;
         if (elapsed >= DEMO_DURATION_MS) {
           clearInterval(tick);
-          clearInterval(keepalive);
-          reply.raw.end();
+          endOnce();
           return;
         }
         send({ type: 'heartbeat', ts: Date.now() });
@@ -59,38 +78,46 @@ export const streamRoutes: FastifyPluginAsync = async (app: FastifyInstance) => 
 
       request.raw.on('close', () => {
         clearInterval(tick);
-        clearInterval(keepalive);
+        endOnce();
       });
-      return reply;
+      return;
     }
 
     const bus = getTrace(flowId);
     if (!bus) {
-      clearInterval(keepalive);
       reply.raw.write(
         `data: ${JSON.stringify({
           type: 'error',
           message: `Unknown flowId ${flowId}. Send a request that returns flowId first, or use demo_*.`,
         })}\n\n`
       );
-      reply.raw.end();
-      return reply;
+      endOnce();
+      return;
     }
 
-    const unsubscribe = bus.subscribe((event) => {
+    // TDZ-safe: bus.subscribe replays the buffered event log synchronously
+    // (so a late subscriber catches up). If the buffer already contains
+    // workplan.finished — which happens in the window between endTrace
+    // emitting that event and ACTIVE_BUSES.delete() running — the listener
+    // would fire before `unsubscribe` was assigned. Declare with `let` and
+    // guard the unsub call so the replay path is safe.
+    let unsubscribe: (() => void) | null = null;
+    const listener = (event: TraceEvent) => {
       send(event);
       if (event.type === 'workplan.finished') {
-        clearInterval(keepalive);
-        unsubscribe();
-        reply.raw.end();
+        if (unsubscribe) unsubscribe();
+        endOnce();
       }
-    });
+    };
+    unsubscribe = bus.subscribe(listener);
+
+    // If the listener already fired endOnce synchronously during replay,
+    // the unsubscribe call above ran and the connection is torn down.
+    if (ended) return;
 
     request.raw.on('close', () => {
-      unsubscribe();
-      clearInterval(keepalive);
+      if (unsubscribe) unsubscribe();
+      endOnce();
     });
-
-    return reply;
   });
 };

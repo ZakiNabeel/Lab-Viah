@@ -160,15 +160,13 @@ export async function runOnboardingTurn(
       prompt,
       systemInstruction: systemPrompt,
       temperature: 0.4,
-      // Gemini 2.5 Pro spends most of its budget on invisible "thinking"
-      // before emitting any visible token. With 768 the visible reply was
-      // truncated mid-string (~40-80 chars) and the JSON parser fell through
-      // to chip-fallback every turn — making the chat feel "frozen". 4096
-      // sits comfortably above observed thinking budgets and matches the
-      // headroom we give Layer-3 statements + moderator synthesis. Even at
-      // 2048 we still saw "Unterminated string in JSON at position 36-45"
-      // on demo-day Layer-1 turns; bumping + jsonRepair fallback eliminates
-      // the chip-fallback every-turn pattern.
+      // Layer-1 fires ~8 sequential turns per signup. Pro's per-turn 429s
+      // (visible as "gemini primary attempt failed" warns on Railway) added
+      // 600-1200ms of backoff to every retry; Flash on the same prompt lands
+      // in 1-3s without retry pressure and the JSON extraction is well within
+      // Flash's range. Wali brief + moderator final synthesis remain on Pro
+      // where Urdu/narrative quality is non-negotiable.
+      modelTier: 'flash',
       maxOutputTokens: 4096,
       responseFormat: 'json',
     },

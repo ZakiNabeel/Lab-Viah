@@ -287,7 +287,10 @@ export async function mapsFindVenue(
     if (bus) {
       recover(bus, 'Maps API key not configured', 'returning hardcoded venue list');
     }
-    logger.info({ city: input.city }, 'mapsFindVenue: no API key, using hardcoded fallback');
+    logger.info(
+      { city: input.city, venueFromFallback: true, reason: 'no_api_key', venues: getFallbackVenues(input.city, count).map((v) => v.name) },
+      'mapsFindVenue: venueFromFallback (no API key)'
+    );
     const venues = getFallbackVenues(input.city, count);
     bus?.emit({
       type: 'tool.result',
@@ -374,9 +377,23 @@ export async function mapsFindVenue(
   const errMsg = lastError instanceof Error ? lastError.message : String(lastError);
   const reason = buildFailureReason(lastError, attempts, errMsg);
   if (bus) recover(bus, reason, 'returning hardcoded venue list');
-  logger.info({ city: input.city, attempts, err: errMsg }, 'mapsFindVenue: all attempts failed, using hardcoded fallback');
-
   const venues = getFallbackVenues(input.city, count);
+  // Distinct `venueFromFallback` log line — grep-able for demo readouts so the
+  // proposal copy doesn't claim "picked from Maps" when it came from the
+  // hardcoded list. The Places API has been intermittently dead through the
+  // hackathon weekend; recover events surface as Antigravity-style recoveries
+  // in the trace UI rather than user-facing errors.
+  logger.info(
+    {
+      city: input.city,
+      attempts,
+      err: errMsg,
+      venueFromFallback: true,
+      reason: 'places_api_failed',
+      venues: venues.map((v) => v.name),
+    },
+    'mapsFindVenue: venueFromFallback (Places API failed after retries)'
+  );
   bus?.emit({
     type: 'tool.result',
     tool: 'mapsFindVenue',

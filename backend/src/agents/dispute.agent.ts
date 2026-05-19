@@ -138,10 +138,14 @@ export async function runDisputeAgent(
     const gem = await geminiCall(
       {
         prompt: buildDisputePrompt(promptArgs),
-        modelTier: 'pro',
+        // Downgraded from Pro to Flash for demo-day Pro-quota relief.
+        // Dispute resolution is fired rarely (post-meeting incidents only) but
+        // when it lands during a demo it was inheriting the same "gemini
+        // primary attempt failed" stack as the booking wali brief — both
+        // chasing the same Pro quota. Flash produces equivalent structured
+        // resolution JSON; narrative quality is good-enough for the trace UI.
+        modelTier: 'flash',
         temperature: 0.3,
-        // Bumped 1400 -> 2400 for Pro thinking-budget headroom (same fix
-        // that landed for Layer-1, Layer-3, moderator synthesis, wali).
         maxOutputTokens: 2400,
         responseFormat: 'json',
       },
