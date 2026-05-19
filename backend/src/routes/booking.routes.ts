@@ -31,10 +31,23 @@ const InitiateBody = z.object({
   userWaliName: z.string().min(1).max(80),
   userWaliRelation: RelationSchema,
   userWaliPhone: z.string().regex(/^\+\d{7,15}$/, 'userWaliPhone must be E.164'),
-  candidateWaliName: z.string().min(1).max(80),
-  candidateWaliPhone: z.string().regex(/^\+\d{7,15}$/, 'candidateWaliPhone must be E.164'),
+  // Candidate wali is OPTIONAL — the user doesn't know it. In production the
+  // platform would look it up from the candidate's own wali_override; for
+  // demo we default to a deterministic placeholder so the mock-SMS render
+  // pipeline still has values to bind to.
+  candidateWaliName: z.string().min(1).max(80).optional(),
+  candidateWaliPhone: z
+    .string()
+    .regex(/^\+\d{7,15}$/, 'candidateWaliPhone must be E.164')
+    .optional(),
   area: z.string().min(1).max(80).optional(),
 });
+
+// Server-side defaults for the candidate-wali fields when the client omits
+// them. Mock SMS bodies render these names; no real outbound call is made,
+// so deterministic placeholders are safe.
+const DEFAULT_CANDIDATE_WALI_NAME = "Candidate's family";
+const DEFAULT_CANDIDATE_WALI_PHONE = '+923000000000';
 
 const ConfirmBody = z.object({
   meetingId: z.string().uuid(),
@@ -59,8 +72,8 @@ export const bookingRoutes: FastifyPluginAsync = async (app: FastifyInstance) =>
         userWaliName: parsed.data.userWaliName,
         userWaliRelation: parsed.data.userWaliRelation,
         userWaliPhone: parsed.data.userWaliPhone,
-        candidateWaliName: parsed.data.candidateWaliName,
-        candidateWaliPhone: parsed.data.candidateWaliPhone,
+        candidateWaliName: parsed.data.candidateWaliName ?? DEFAULT_CANDIDATE_WALI_NAME,
+        candidateWaliPhone: parsed.data.candidateWaliPhone ?? DEFAULT_CANDIDATE_WALI_PHONE,
         ...(parsed.data.area !== undefined ? { area: parsed.data.area } : {}),
       });
 
@@ -78,17 +91,20 @@ export const bookingRoutes: FastifyPluginAsync = async (app: FastifyInstance) =>
       // the background AFTER meetingIdPromise resolves — endTrace is deferred
       // via setImmediate so the SSE bus stays alive for mobile subscribers.
       //
-      // Race against a 30s timeout: if persist_proposal doesn't land within
-      // that window (network stall, DB unreachable) we surface a clear error
-      // rather than hanging the request indefinitely.
-      const MEETING_ID_TIMEOUT_MS = 30_000;
+      // Race against a 90s timeout: book_meeting runs 2 parallel Pro calls
+      // for the wali brief (EN + native) plus the slot/venue proposal — on
+      // a cold Vertex region the Pro thinking phase alone can take 10-20s
+      // per call. 30s was too tight after the wali-brief token bump landed
+      // post-Session 4. 90s gives comfortable headroom while still bounding
+      // the request so a true upstream stall surfaces a clear error.
+      const MEETING_ID_TIMEOUT_MS = 90_000;
       let meetingId: string;
       try {
         meetingId = await Promise.race([
           meetingIdPromise,
           new Promise<never>((_, reject) =>
             setTimeout(
-              () => reject(new AppError('TIMEOUT', 'book_meeting did not produce a meetingId within 30s')),
+              () => reject(new AppError('TIMEOUT', 'book_meeting did not produce a meetingId within 90s')),
               MEETING_ID_TIMEOUT_MS
             )
           ),
