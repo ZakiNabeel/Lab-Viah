@@ -15,6 +15,7 @@ import { geminiCall } from './_shared/gemini.js';
 import { decide, obs, recover, type TraceBus } from './_shared/trace.js';
 import { AppError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
+import { repairTruncatedJson } from '../utils/jsonRepair.js';
 import {
   buildTwinStatementsPrompt,
   buildTwinSpecPrompt,
@@ -53,11 +54,10 @@ export async function generateLayer3Statements(
     {
       prompt: buildTwinStatementsPrompt(session),
       temperature: 0.6,
-      // Same thinking-budget headroom as onboarding.agent.ts — Pro consumes
-      // most of a small budget on invisible reasoning, truncating the visible
-      // JSON. 768 was observed cutting Layer-3 statements mid-sentence; 2048
-      // clears the budget while still letting the response stay tight.
-      maxOutputTokens: 2048,
+      // Pro burns invisible "thinking" tokens against the same output budget;
+      // 2048 occasionally cut JSON mid-key. 4096 absorbs the worst observed
+      // bursts. Layer-3 runs once per onboarding so the cost is immaterial.
+      maxOutputTokens: 4096,
       responseFormat: 'json',
     },
     bus
@@ -66,14 +66,30 @@ export async function generateLayer3Statements(
   let parsed: z.infer<typeof StatementsSchema>;
   try {
     parsed = StatementsSchema.parse(JSON.parse(gem.text));
-  } catch (err) {
-    logger.warn({ err, raw: gem.text.slice(0, 400) }, 'twin_forge: statements failed schema');
-    recover(
-      bus,
-      'malformed Layer-3 JSON from Gemini',
-      'falling back to default statements drawn from personality vector'
-    );
-    return fallbackStatements(session);
+  } catch (firstErr) {
+    // Try repairing a truncated tail before giving up. The visible JSON is
+    // almost always valid up to the cutoff — closing strings and brackets
+    // recovers a usable response 80%+ of the time.
+    try {
+      const repaired = repairTruncatedJson(gem.text);
+      parsed = StatementsSchema.parse(JSON.parse(repaired));
+      recover(
+        bus,
+        'Layer-3 JSON truncated by Gemini',
+        'parsed after closing unterminated string/array — using repaired statements'
+      );
+    } catch (secondErr) {
+      logger.warn(
+        { firstErr, secondErr, raw: gem.text.slice(0, 400) },
+        'twin_forge: statements failed schema even after repair'
+      );
+      recover(
+        bus,
+        'malformed Layer-3 JSON from Gemini (repair unsuccessful)',
+        'falling back to default statements drawn from personality vector'
+      );
+      return fallbackStatements(session);
+    }
   }
 
   decide(

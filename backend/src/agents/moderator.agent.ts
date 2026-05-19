@@ -25,6 +25,7 @@ import { z } from 'zod';
 import { geminiCall } from './_shared/gemini.js';
 import { decide, obs, recover, taskEnd, taskStart, type TraceBus } from './_shared/trace.js';
 import { logger } from '../utils/logger.js';
+import { repairTruncatedJson } from '../utils/jsonRepair.js';
 import {
   buildCombinedDebatePrompt,
   buildFinalSynthesisPrompt,
@@ -81,7 +82,10 @@ const DEBATE_TEMPERATURE = 0.4;
 // tokens gives generous headroom with Flash thinking off.
 const DEBATE_MAX_TOKENS = 2048;
 const SYNTHESIS_TEMPERATURE = 0.3;
-const SYNTHESIS_MAX_TOKENS = 1024;
+// Was 1024; observed truncation `Unterminated string in JSON at position 125`
+// when Pro's thinking budget ate the visible response. 2048 + jsonRepair tail
+// in the catch handler covers both root causes.
+const SYNTHESIS_MAX_TOKENS = 2048;
 
 // =========================================================
 // Public API
@@ -415,6 +419,8 @@ async function runFinalSynthesis(
     recommendation,
   });
 
+  let parsed: z.infer<typeof SynthesisSchema> | null = null;
+  let rawText = '';
   try {
     const gem = await geminiCall(
       {
@@ -432,24 +438,52 @@ async function runFinalSynthesis(
       },
       input.bus
     );
-    const parsed = SynthesisSchema.parse(JSON.parse(gem.text));
+    rawText = gem.text;
+    parsed = SynthesisSchema.parse(JSON.parse(rawText));
+  } catch (firstErr) {
+    // Try a JSON-repair pass on the raw text before falling back to the
+    // deterministic highlights — most failures here are mid-string truncation
+    // and the visible content is still narrative-quality.
+    if (rawText.length > 0) {
+      try {
+        const repaired = repairTruncatedJson(rawText);
+        parsed = SynthesisSchema.parse(JSON.parse(repaired));
+        recover(
+          input.bus,
+          'moderator final synthesis truncated by Gemini',
+          'parsed after closing unterminated string/array — using repaired narrative'
+        );
+      } catch (secondErr) {
+        logger.warn(
+          {
+            firstErr: firstErr instanceof Error ? firstErr.message : String(firstErr),
+            secondErr: secondErr instanceof Error ? secondErr.message : String(secondErr),
+          },
+          'moderator: final synthesis failed even after repair'
+        );
+      }
+    } else {
+      logger.warn(
+        { err: firstErr instanceof Error ? firstErr.message : String(firstErr) },
+        'moderator: final synthesis failed; using deterministic highlights'
+      );
+    }
+  }
+
+  if (parsed) {
     return {
       top_strengths: tripleOf(parsed.top_strengths),
       top_friction_points: tripleOf(parsed.top_friction_points),
     };
-  } catch (err) {
-    logger.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      'moderator: final synthesis failed; using deterministic highlights'
-    );
-    recover(
-      input.bus,
-      'final-synthesis Gemini call failed',
-      'using deterministic highlights drawn from the top/bottom 3 scored dimensions'
-    );
-    const fb = fallbackHighlights(input.perDim);
-    return { top_strengths: fb.strengths, top_friction_points: fb.frictions };
   }
+
+  recover(
+    input.bus,
+    'final-synthesis Gemini call failed',
+    'using deterministic highlights drawn from the top/bottom 3 scored dimensions'
+  );
+  const fb = fallbackHighlights(input.perDim);
+  return { top_strengths: fb.strengths, top_friction_points: fb.frictions };
 }
 
 // =========================================================
