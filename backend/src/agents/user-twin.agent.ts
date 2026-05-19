@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { geminiCall } from './_shared/gemini.js';
 import { decide, obs, recover, type TraceBus } from './_shared/trace.js';
 import { logger } from '../utils/logger.js';
+import { repairTruncatedJson } from '../utils/jsonRepair.js';
 import {
   buildTwinTurnPrompt,
   formatTurnTranscript,
@@ -84,7 +85,8 @@ export async function runTwinTurn(
     counterpartDealbreakers: args.opponentSpec.dealbreakers,
   });
 
-  let parsed: TwinTurnResult;
+  let parsed: TwinTurnResult | null = null;
+  let rawText = '';
   try {
     const gem = await geminiCall(
       {
@@ -101,12 +103,41 @@ export async function runTwinTurn(
       },
       bus
     );
-    parsed = TwinTurnSchema.parse(JSON.parse(gem.text));
+    rawText = gem.text;
   } catch (err) {
     logger.warn(
       { err: err instanceof Error ? err.message : String(err), side, dim: args.dimension },
-      'twin turn: Gemini call or schema parse failed; falling back to deterministic neutral statement'
+      'twin turn: Gemini call failed'
     );
+  }
+
+  if (rawText.length > 0) {
+    try {
+      parsed = TwinTurnSchema.parse(JSON.parse(rawText));
+    } catch (firstErr) {
+      try {
+        const repaired = repairTruncatedJson(rawText);
+        parsed = TwinTurnSchema.parse(JSON.parse(repaired));
+        recover(
+          bus,
+          `Twin turn for ${speakerName} on ${args.dimension}: JSON truncated`,
+          'parsed after closing unterminated string/object — using repaired turn'
+        );
+      } catch (secondErr) {
+        logger.warn(
+          {
+            firstErr: firstErr instanceof Error ? firstErr.message : String(firstErr),
+            secondErr: secondErr instanceof Error ? secondErr.message : String(secondErr),
+            side,
+            dim: args.dimension,
+          },
+          'twin turn: schema parse failed even after repair'
+        );
+      }
+    }
+  }
+
+  if (!parsed) {
     recover(
       bus,
       `Twin turn for ${speakerName} on ${args.dimension} failed (LLM or schema)`,

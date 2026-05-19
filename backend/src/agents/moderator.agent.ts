@@ -275,6 +275,7 @@ async function scoreOneDimension(input: ScoreOneInput): Promise<ScoreOneOutput> 
   });
 
   let parsed: z.infer<typeof CombinedDebateSchema> | null = null;
+  let rawText = '';
   try {
     const gem = await geminiCall(
       {
@@ -286,12 +287,42 @@ async function scoreOneDimension(input: ScoreOneInput): Promise<ScoreOneOutput> 
       },
       bus
     );
-    parsed = CombinedDebateSchema.parse(JSON.parse(gem.text));
+    rawText = gem.text;
   } catch (err) {
     logger.warn(
       { err: err instanceof Error ? err.message : String(err), dim },
-      'moderator: combined debate call failed; falling back to neutral'
+      'moderator: combined debate Gemini call failed'
     );
+  }
+
+  if (rawText.length > 0) {
+    try {
+      parsed = CombinedDebateSchema.parse(JSON.parse(rawText));
+    } catch (firstErr) {
+      // jsonRepair fallback — Flash truncates less than Pro but still hits
+      // it under burst load (5 parallel debates × 8 dims).
+      try {
+        const repaired = repairTruncatedJson(rawText);
+        parsed = CombinedDebateSchema.parse(JSON.parse(repaired));
+        recover(
+          bus,
+          `dim=${dim}: combined-debate JSON truncated`,
+          'parsed after closing unterminated string/object — using repaired debate'
+        );
+      } catch (secondErr) {
+        logger.warn(
+          {
+            firstErr: firstErr instanceof Error ? firstErr.message : String(firstErr),
+            secondErr: secondErr instanceof Error ? secondErr.message : String(secondErr),
+            dim,
+          },
+          'moderator: combined debate schema parse failed even after repair'
+        );
+      }
+    }
+  }
+
+  if (!parsed) {
     recover(
       bus,
       `dim=${dim}: combined-debate Gemini call failed`,

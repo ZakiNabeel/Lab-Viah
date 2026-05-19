@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { geminiCall } from './_shared/gemini.js';
 import { decide, obs, recover, taskEnd, taskStart, type TraceBus } from './_shared/trace.js';
 import { logger } from '../utils/logger.js';
+import { repairTruncatedJson } from '../utils/jsonRepair.js';
 import {
   buildDisputePrompt,
   fallbackResolution,
@@ -129,8 +130,9 @@ export async function runDisputeAgent(
     counterpartySpec: input.counterpartySpec,
   };
 
-  let resolution: DisputeResolution;
+  let resolution: DisputeResolution | null = null;
   let fromFallback = false;
+  let rawText = '';
 
   try {
     const gem = await geminiCall(
@@ -138,20 +140,51 @@ export async function runDisputeAgent(
         prompt: buildDisputePrompt(promptArgs),
         modelTier: 'pro',
         temperature: 0.3,
-        maxOutputTokens: 1400,
+        // Bumped 1400 -> 2400 for Pro thinking-budget headroom (same fix
+        // that landed for Layer-1, Layer-3, moderator synthesis, wali).
+        maxOutputTokens: 2400,
         responseFormat: 'json',
       },
       bus
     );
-    const parsed = DisputeResolutionSchema.parse(JSON.parse(gem.text));
-    // Cast through unknown to satisfy strict assignment — Zod narrows the
-    // severity union but TypeScript doesn't see the literal widening as safe.
-    resolution = parsed as unknown as DisputeResolution;
+    rawText = gem.text;
   } catch (err) {
     logger.warn(
       { err: err instanceof Error ? err.message : String(err), type: input.disputeType },
-      'dispute agent: Gemini call or schema parse failed; using deterministic fallback'
+      'dispute agent: Gemini call failed'
     );
+  }
+
+  if (rawText.length > 0) {
+    try {
+      const parsed = DisputeResolutionSchema.parse(JSON.parse(rawText));
+      // Cast through unknown to satisfy strict assignment — Zod narrows the
+      // severity union but TypeScript doesn't see the literal widening as safe.
+      resolution = parsed as unknown as DisputeResolution;
+    } catch (firstErr) {
+      try {
+        const repaired = repairTruncatedJson(rawText);
+        const parsed = DisputeResolutionSchema.parse(JSON.parse(repaired));
+        resolution = parsed as unknown as DisputeResolution;
+        recover(
+          bus,
+          `dispute mediation JSON truncated for type=${input.disputeType}`,
+          'parsed after closing unterminated string/object — using repaired resolution'
+        );
+      } catch (secondErr) {
+        logger.warn(
+          {
+            firstErr: firstErr instanceof Error ? firstErr.message : String(firstErr),
+            secondErr: secondErr instanceof Error ? secondErr.message : String(secondErr),
+            type: input.disputeType,
+          },
+          'dispute agent: schema parse failed even after repair'
+        );
+      }
+    }
+  }
+
+  if (!resolution) {
     recover(
       bus,
       `dispute mediation Gemini call failed for type=${input.disputeType}`,

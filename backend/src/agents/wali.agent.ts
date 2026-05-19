@@ -23,6 +23,7 @@ import { z } from 'zod';
 import { geminiCall } from './_shared/gemini.js';
 import { decide, obs, recover, taskEnd, taskStart, type TraceBus } from './_shared/trace.js';
 import { logger } from '../utils/logger.js';
+import { repairTruncatedJson } from '../utils/jsonRepair.js';
 import {
   buildWaliBriefPrompt,
   fallbackBrief,
@@ -151,32 +152,68 @@ async function generateOneLanguage(
     userFirstName: input.userFirstName,
   };
 
-  let document: WaliBriefDocument;
+  let document: WaliBriefDocument | null = null;
   let usedFallback = false;
+  let rawText = '';
   try {
     const gem = await geminiCall(
       {
         prompt: buildWaliBriefPrompt(promptArgs),
         // Pro on Wali briefs — 2 calls per /book/initiate, low volume, quality
         // matters. Urdu in particular drops off sharply on Flash without
-        // thinking.
+        // thinking. Pro burns thinking tokens against the same budget so we
+        // also run a jsonRepair fallback below before giving up.
         modelTier: 'pro',
         temperature: 0.55,
-        maxOutputTokens: 1400,
+        // Bumped 1400 -> 2400 to give Pro headroom against thinking-budget
+        // truncation observed on demo-day Layer-1 turns.
+        maxOutputTokens: 2400,
         responseFormat: 'json',
       },
       bus
     );
-    const parsed = BriefSchema.parse(JSON.parse(gem.text));
-    document = {
-      ...parsed,
-      _pct: (input.report.overall_score * 100).toFixed(0),
-    };
+    rawText = gem.text;
   } catch (err) {
     logger.warn(
       { err: err instanceof Error ? err.message : String(err), language },
-      'wali brief: Gemini call or schema failed; using deterministic fallback'
+      'wali brief: Gemini call failed'
     );
+  }
+
+  if (rawText.length > 0) {
+    try {
+      const parsed = BriefSchema.parse(JSON.parse(rawText));
+      document = {
+        ...parsed,
+        _pct: (input.report.overall_score * 100).toFixed(0),
+      };
+    } catch (firstErr) {
+      try {
+        const repaired = repairTruncatedJson(rawText);
+        const parsed = BriefSchema.parse(JSON.parse(repaired));
+        document = {
+          ...parsed,
+          _pct: (input.report.overall_score * 100).toFixed(0),
+        };
+        recover(
+          bus,
+          `wali brief JSON truncated for language=${language}`,
+          'parsed after closing unterminated string/object — using repaired brief'
+        );
+      } catch (secondErr) {
+        logger.warn(
+          {
+            firstErr: firstErr instanceof Error ? firstErr.message : String(firstErr),
+            secondErr: secondErr instanceof Error ? secondErr.message : String(secondErr),
+            language,
+          },
+          'wali brief: schema parse failed even after repair'
+        );
+      }
+    }
+  }
+
+  if (!document) {
     recover(
       bus,
       `wali brief generation failed for language=${language}`,

@@ -229,11 +229,15 @@ export async function forgeTwin(session: OnboardingSession, bus: TraceBus): Prom
   obs(bus, 'twin_forge', 'synthesizing TwinSpec from 4 layers');
 
   // Step 1 — body via Gemini.
+  // Bumped 1500 -> 2400 for Pro thinking-budget headroom — matches the
+  // pattern that landed for Layer-1, Layer-3 statements, moderator
+  // synthesis, wali brief, and dispute resolution after demo-day truncation
+  // observed on Layer-1.
   const gem = await geminiCall(
     {
       prompt: buildTwinSpecPrompt(session),
       temperature: 0.3,
-      maxOutputTokens: 1500,
+      maxOutputTokens: 2400,
       responseFormat: 'json',
     },
     bus
@@ -242,14 +246,27 @@ export async function forgeTwin(session: OnboardingSession, bus: TraceBus): Prom
   let body: z.infer<typeof SpecBodySchema>;
   try {
     body = SpecBodySchema.parse(JSON.parse(gem.text));
-  } catch (err) {
-    logger.warn({ err, raw: gem.text.slice(0, 800) }, 'twin_forge: spec body failed schema');
-    recover(
-      bus,
-      'malformed final TwinSpec JSON from Gemini',
-      'rebuilding spec deterministically from payload + vector defaults'
-    );
-    body = fallbackSpecBody(session);
+  } catch (firstErr) {
+    try {
+      const repaired = repairTruncatedJson(gem.text);
+      body = SpecBodySchema.parse(JSON.parse(repaired));
+      recover(
+        bus,
+        'final TwinSpec JSON truncated by Gemini',
+        'parsed after closing unterminated string/object — using repaired spec body'
+      );
+    } catch (secondErr) {
+      logger.warn(
+        { firstErr, secondErr, raw: gem.text.slice(0, 800) },
+        'twin_forge: spec body failed schema even after repair'
+      );
+      recover(
+        bus,
+        'malformed final TwinSpec JSON from Gemini (repair unsuccessful)',
+        'rebuilding spec deterministically from payload + vector defaults'
+      );
+      body = fallbackSpecBody(session);
+    }
   }
 
   // Normalize weights so they sum to 1.0 (Gemini sometimes drifts ±0.05).
