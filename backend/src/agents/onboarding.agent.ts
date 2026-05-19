@@ -82,6 +82,10 @@ export type OnboardingTurnInput = {
 export type OnboardingTurnResult = z.infer<typeof TurnOutputSchema> & {
   sttConfidence?: number;
   sttStub?: boolean;
+  // Echoed back so the client can render the bubble with the words the user
+  // actually said (not "🎙️ Voice"). Only populated when audioBase64 was sent
+  // AND STT produced a non-empty transcript above the confidence threshold.
+  sttTranscript?: string;
 };
 
 const LOW_LLM_CONFIDENCE = 0.6;
@@ -107,6 +111,7 @@ export async function runOnboardingTurn(
   let userText = input.text?.trim() ?? '';
   let sttConfidence: number | undefined;
   let sttStub: boolean | undefined;
+  let sttTranscript: string | undefined;
 
   if (!userText && input.audioBase64) {
     obs(bus, 'onboarding', 'audio chunk provided; running STT before LLM turn');
@@ -117,6 +122,7 @@ export async function runOnboardingTurn(
     sttConfidence = stt.confidence;
     sttStub = stt.stub;
     userText = stt.transcript;
+    if (stt.transcript) sttTranscript = stt.transcript;
 
     if (stt.lowConfidence || !userText) {
       // Chip-fallback path — the visible recovery from §5.1 failure modes.
@@ -136,6 +142,7 @@ export async function runOnboardingTurn(
         chip_options: chipOptionsFor(session),
         ...(sttConfidence !== undefined ? { sttConfidence } : {}),
         ...(sttStub !== undefined ? { sttStub } : {}),
+        ...(sttTranscript !== undefined ? { sttTranscript } : {}),
       };
     }
   }
@@ -207,6 +214,7 @@ export async function runOnboardingTurn(
         chip_options: chipOptionsFor(session),
         ...(sttConfidence !== undefined ? { sttConfidence } : {}),
         ...(sttStub !== undefined ? { sttStub } : {}),
+        ...(sttTranscript !== undefined ? { sttTranscript } : {}),
       };
     }
   }
@@ -234,6 +242,7 @@ export async function runOnboardingTurn(
     ...parsed,
     ...(sttConfidence !== undefined ? { sttConfidence } : {}),
     ...(sttStub !== undefined ? { sttStub } : {}),
+    ...(sttTranscript !== undefined ? { sttTranscript } : {}),
   };
 }
 

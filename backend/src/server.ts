@@ -14,6 +14,7 @@ import { disputeRoutes } from './routes/dispute.routes.js';
 import { feedbackRoutes } from './routes/feedback.routes.js';
 import { healthCheck } from './db/client.js';
 import { geminiSmokeTest } from './agents/_shared/gemini.js';
+import { mapsFindVenue } from './tools/maps.js';
 import type { ApiResponse } from './agents/_shared/types.js';
 
 // Return type intentionally inferred — passing a concrete Pino instance to
@@ -35,6 +36,54 @@ export async function buildServer() {
       service: string;
       env: string;
     }>;
+  });
+
+  // Permanent demo-day diagnostic for the Google Maps Places API. Returns the
+  // raw mapsFindVenue result + a single-line verdict so a curl can answer
+  // "is Places live?" without fishing through Railway logs.
+  // No auth — it's a read against a public Google API.
+  app.get<{ Querystring: { city?: string; area?: string } }>('/health/maps', async (request) => {
+    const city = (request.query.city ?? 'Karachi').trim();
+    const area = request.query.area?.trim();
+    const started = Date.now();
+    try {
+      const result = await mapsFindVenue({ city, ...(area ? { area } : {}), count: 3 });
+      const verdict = result.usedFallback
+        ? (result.attempts === 0 ? 'no_api_key' : 'places_api_failed')
+        : 'live';
+      return {
+        ok: true,
+        data: {
+          verdict,
+          city,
+          area: area ?? null,
+          usedFallback: result.usedFallback,
+          attempts: result.attempts,
+          venueCount: result.venues.length,
+          firstVenue: result.venues[0]?.name ?? null,
+          firstSource: result.venues[0]?.source ?? null,
+          latency_ms: Date.now() - started,
+        },
+      } satisfies ApiResponse<{
+        verdict: 'live' | 'no_api_key' | 'places_api_failed';
+        city: string;
+        area: string | null;
+        usedFallback: boolean;
+        attempts: number;
+        venueCount: number;
+        firstVenue: string | null;
+        firstSource: 'maps_places' | 'fallback' | null;
+        latency_ms: number;
+      }>;
+    } catch (err) {
+      return {
+        ok: false,
+        error: {
+          code: 'INTERNAL',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      } satisfies ApiResponse<never>;
+    }
   });
 
   // Deep health — exercises Supabase + Gemini. Use sparingly (paid path).
