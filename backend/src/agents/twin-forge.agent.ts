@@ -33,6 +33,9 @@ import type {
 // 1. Layer 3 — interview statements
 // =========================================================
 
+// Loosened from .length(3) so a Pro-truncated array with 1-2 items still
+// passes (jsonRepair can close brackets but can't add items). Caller pads to
+// 3 from fallbackStatements when the agent returns fewer.
 const StatementsSchema = z.object({
   statements: z
     .array(
@@ -41,7 +44,8 @@ const StatementsSchema = z.object({
         statement: z.string().min(8).max(280),
       })
     )
-    .length(3),
+    .min(1)
+    .max(3),
 });
 
 export async function generateLayer3Statements(
@@ -92,18 +96,36 @@ export async function generateLayer3Statements(
     }
   }
 
+  // Pad to 3 if Pro truncated — use deterministic statements from any
+  // dimensions the agent didn't cover. Picks the top remaining dim by
+  // personality vector magnitude so the synthetic statement still feels signal.
+  let statements = parsed.statements.map((s) => ({
+    dimension: s.dimension,
+    statement: s.statement,
+    agree: null as null | boolean,
+  }));
+  if (statements.length < 3) {
+    recover(
+      bus,
+      `Layer-3 returned only ${statements.length}/3 statements`,
+      'padding from deterministic fallbacks drawn from the personality vector'
+    );
+    const covered = new Set(statements.map((s) => s.dimension));
+    const fb = fallbackStatements(session).filter((s) => !covered.has(s.dimension));
+    for (const f of fb) {
+      if (statements.length >= 3) break;
+      statements.push(f);
+    }
+  }
+
   decide(
     bus,
     'twin_forge',
-    `generated 3 statements across dimensions: ${parsed.statements.map((s) => s.dimension).join(', ')}`,
+    `generated ${statements.length} statements across dimensions: ${statements.map((s) => s.dimension).join(', ')}`,
     'picked top-signal dimensions from personality vector'
   );
 
-  return parsed.statements.map((s) => ({
-    dimension: s.dimension,
-    statement: s.statement,
-    agree: null,
-  }));
+  return statements;
 }
 
 // Fallback when Gemini gives us junk: deterministic statements over the
@@ -229,15 +251,16 @@ export async function forgeTwin(session: OnboardingSession, bus: TraceBus): Prom
   obs(bus, 'twin_forge', 'synthesizing TwinSpec from 4 layers');
 
   // Step 1 — body via Gemini.
-  // Bumped 1500 -> 2400 for Pro thinking-budget headroom — matches the
-  // pattern that landed for Layer-1, Layer-3 statements, moderator
-  // synthesis, wali brief, and dispute resolution after demo-day truncation
-  // observed on Layer-1.
+  // Session-7 final: bumped 2400 -> 4096 because spec body has 8 dimensions
+  // × structured fields + dealbreakers array + dimension_weights object →
+  // typically 800-1200 chars JSON, but Pro's thinking budget was eating the
+  // visible budget at 2400, surfacing as "twin_forge: spec body failed schema
+  // even after repair" and falling all the way through to fallbackSpecBody.
   const gem = await geminiCall(
     {
       prompt: buildTwinSpecPrompt(session),
       temperature: 0.3,
-      maxOutputTokens: 2400,
+      maxOutputTokens: 4096,
       responseFormat: 'json',
     },
     bus

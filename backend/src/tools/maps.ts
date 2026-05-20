@@ -33,6 +33,9 @@ export type Venue = {
   source: 'maps_places' | 'fallback';
   placeId: string | null;
   mapsUrl: string;
+  // Google Static Maps API URL — drop straight into an <Image> on the client
+  // for an inline venue preview. null when GOOGLE_MAPS_API_KEY isn't set.
+  staticMapUrl: string | null;
 };
 
 export type MapsFindVenueResult = {
@@ -67,7 +70,7 @@ type PlacesResponse = z.infer<typeof PlacesResponseSchema>;
 // Hardcoded fallback venues — real, verifiable places
 // =========================================================
 
-type FallbackVenueData = Omit<Venue, 'source' | 'category' | 'mapsUrl' | 'placeId'>;
+type FallbackVenueData = Omit<Venue, 'source' | 'category' | 'mapsUrl' | 'placeId' | 'staticMapUrl'>;
 
 const FALLBACK_VENUES: Record<string, FallbackVenueData[]> = {
   Karachi: [
@@ -135,7 +138,26 @@ function makeFallbackVenue(data: FallbackVenueData): Venue {
     category: 'fallback',
     placeId: null,
     mapsUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(data.name + ' ' + data.city)}`,
+    staticMapUrl: buildStaticMapUrl(`${data.name}, ${data.address}`),
   };
+}
+
+// Builds a Google Static Maps API URL for an inline thumbnail. Returns null
+// when no API key is configured (frontend falls back to text-only).
+// 600x240 @ scale=2 = ~1200x480 actual pixels → crisp on retina.
+function buildStaticMapUrl(query: string): string | null {
+  const apiKey = env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) return null;
+  const params = new URLSearchParams({
+    center: query,
+    zoom: '15',
+    size: '600x240',
+    scale: '2',
+    maptype: 'roadmap',
+    markers: `color:0xe9a847|${query}`,
+    key: apiKey,
+  });
+  return `https://maps.googleapis.com/maps/api/staticmap?${params.toString()}`;
 }
 
 function getFallbackVenues(city: string, count: number): Venue[] {
@@ -250,6 +272,7 @@ function parsePlaces(
       source: 'maps_places',
       placeId,
       mapsUrl,
+      staticMapUrl: buildStaticMapUrl(`${name}, ${address}`),
     };
     return venue;
   });

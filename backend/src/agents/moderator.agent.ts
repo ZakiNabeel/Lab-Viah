@@ -59,9 +59,13 @@ const CombinedDebateSchema = z.object({
   friction_level: z.enum(['none', 'low', 'medium', 'high', 'dealbreaker']),
 });
 
+// Loosened from .length(3) to .min(1).max(3) to survive Pro truncation —
+// jsonRepair can close arrays but can't synthesize missing items, so a
+// truncated 2-item array used to fail schema entirely. Post-process pads to 3
+// with deterministic fillers drawn from the per-dim scores (see padTo3).
 const SynthesisSchema = z.object({
-  top_strengths: z.array(z.string().min(1).max(160)).length(3),
-  top_friction_points: z.array(z.string().min(1).max(160)).length(3),
+  top_strengths: z.array(z.string().min(1).max(160)).min(1).max(3),
+  top_friction_points: z.array(z.string().min(1).max(160)).min(1).max(3),
 });
 
 // =========================================================
@@ -78,9 +82,14 @@ const SynthesisSchema = z.object({
 // slots cooperatively). 8 dims × ~4s = ~32s typical, 60s cap for outliers.
 const PER_DEBATE_BUDGET_MS = 60_000;
 const DEBATE_TEMPERATURE = 0.4;
-// One call per dim now (was three). Output is ~600-800 chars JSON. 2048
-// tokens gives generous headroom with Flash thinking off.
-const DEBATE_MAX_TOKENS = 2048;
+// One call per dim now (was three). Output is ~600-800 chars JSON.
+// Session-7 final: bumped 2048 -> 4096 because all agents are back on Pro,
+// and Pro's thinking-token tax was eating the visible budget on the 4
+// statement+reasoning+score+evidence dims (kids/conflict/geography/dealbreakers)
+// — those tend to be the longest because the prompts encourage them to enumerate
+// boundaries. Truncation surfaced as "combined debate schema parse failed
+// even after repair" with 0 scores fed downstream into the deterministic fallback.
+const DEBATE_MAX_TOKENS = 4096;
 const SYNTHESIS_TEMPERATURE = 0.3;
 // Was 1024; observed truncation `Unterminated string in JSON at position 125`
 // when Pro's thinking budget ate the visible response. 2048 + jsonRepair tail
@@ -512,9 +521,23 @@ async function runFinalSynthesis(
   }
 
   if (parsed) {
+    // Pad to exactly 3 using deterministic per-dim fallbacks so downstream
+    // tripleOf doesn't get blank-padded. fallbackHighlights returns 3 of each
+    // drawn from the highest/lowest scored dims — perfect filler when Pro
+    // truncated to 1-2 items.
+    const fb = fallbackHighlights(input.perDim);
+    const strengths = padTo3(parsed.top_strengths, fb.strengths);
+    const frictions = padTo3(parsed.top_friction_points, fb.frictions);
+    if (parsed.top_strengths.length < 3 || parsed.top_friction_points.length < 3) {
+      recover(
+        input.bus,
+        `final-synthesis returned partial arrays (strengths=${parsed.top_strengths.length}, frictions=${parsed.top_friction_points.length})`,
+        'padding to 3 with deterministic highlights drawn from per-dim scores'
+      );
+    }
     return {
-      top_strengths: tripleOf(parsed.top_strengths),
-      top_friction_points: tripleOf(parsed.top_friction_points),
+      top_strengths: tripleOf(strengths),
+      top_friction_points: tripleOf(frictions),
     };
   }
 
@@ -525,6 +548,22 @@ async function runFinalSynthesis(
   );
   const fb = fallbackHighlights(input.perDim);
   return { top_strengths: fb.strengths, top_friction_points: fb.frictions };
+}
+
+// Pad `arr` to length 3 using items from `filler` (skipping any already
+// present in arr to avoid duplicates). filler is the deterministic
+// fallbackHighlights output so the final 3 read coherently together.
+function padTo3(arr: string[], filler: readonly string[]): string[] {
+  if (arr.length >= 3) return arr.slice(0, 3);
+  const out = [...arr];
+  for (const f of filler) {
+    if (out.length >= 3) break;
+    if (!out.some((s) => s.toLowerCase() === f.toLowerCase())) {
+      out.push(f);
+    }
+  }
+  while (out.length < 3) out.push('—');
+  return out.slice(0, 3);
 }
 
 // =========================================================
