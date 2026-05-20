@@ -53,14 +53,14 @@ export type GeminiCallResult = {
 };
 
 const PRIMARY_ATTEMPTS = 2;
-// 12s — Flash with thinking off responds in 1-3s when Vertex isn't under
-// pressure. 30s was patient enough to chain 3 timeouts × 3 attempts into
-// 90+s per debate, eating the per-debate budget. Under hackathon-tier quota
-// the right move is fail-fast: a single 12s wall, the deterministic fallback
-// kicks in, and the next debate's call still gets a slot in time. Pro calls
-// (rare in this path) can live with the same wall — they take 10-15s when
-// they work and we'd rather skip them than wait 30s.
-const PRIMARY_TIMEOUT_MS = 12_000;
+// 25s — Session-7 hotfix #2: user reverted all agents to Pro for quality. Pro
+// under 10-concurrent + thinking-token tax routinely takes 15-22s per call
+// (vs Flash's 1-3s), so the 12s wall was failing ~1-in-3 Pro calls with
+// "Vertex Gemini gemini-2.5-pro exceeded 12000ms" — visible in Railway logs.
+// 25s catches the slow-Pro tail; 2 attempts × 25s + Flash fallback fits the
+// 60s per-debate budget. If quota gets revoked and Flash becomes the
+// fast-path again, drop this back to 12s.
+const PRIMARY_TIMEOUT_MS = 25_000;
 
 // =========================================================
 // Global concurrency cap.
