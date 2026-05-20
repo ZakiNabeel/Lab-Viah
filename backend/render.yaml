@@ -1,0 +1,45 @@
+# Render Blueprint — Lab-Viah backend (RishtaAI hackathon)
+# Auto-detected by Render on repo connect. Env vars set in dashboard.
+# Free tier sleeps after 15 min idle → keep alive by hitting /health
+# or upgrade to Starter ($7/mo) for the demo window.
+services:
+  - type: web
+    name: lab-viah-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      # Everything below set manually in Render dashboard — copy from Railway:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: GCP_PROJECT_ID
+        sync: false
+      - key: GCP_LOCATION
+        sync: false
+      - key: VERTEX_MODEL_PRIMARY
+        sync: false
+      - key: VERTEX_MODEL_FALLBACK
+        sync: false
+      - key: GOOGLE_APPLICATION_CREDENTIALS_JSON
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: DEV_OTP_BYPASS
+        sync: false
+      - key: DEV_OTP_PHONE
+        sync: false
+      - key: DEV_OTP_CODE
+        sync: false
