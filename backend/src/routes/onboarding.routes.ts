@@ -28,6 +28,7 @@ import {
 } from '../workplans/onboarding.workplan.js';
 import type { OnboardingTurnResult } from '../agents/onboarding.agent.js';
 import type { TwinStatement } from '../domain/onboarding-session.js';
+import { sttTranscribe, type SttLanguage } from '../tools/stt.js';
 
 // =========================================================
 // Shared schemas
@@ -84,6 +85,24 @@ const WaliBody = z.object({
 });
 
 const FinalizeBody = z.object({ sessionId: z.string().min(1) });
+
+// Lightweight STT-only endpoint. No session state, no LLM turn — the
+// frontend posts a voice clip, gets the transcript back, drops it in the
+// chat draft so the user can review/edit before tapping Send. The real
+// Layer-1 turn still goes through POST /onboarding/layer1 with `text`.
+const TranscribeBody = z.object({
+  language: LangSchema.optional(),
+  audioBase64: z
+    .string()
+    .min(1)
+    .max(8 * 1024 * 1024),
+});
+
+function sttLangFor(pref: 'ur' | 'ro_ur' | 'en' | undefined): SttLanguage {
+  if (pref === 'ur') return 'ur-PK';
+  if (pref === 'en') return 'en-US';
+  return 'auto';
+}
 
 // =========================================================
 // Plugin
@@ -221,6 +240,40 @@ export const onboardingRoutes: FastifyPluginAsync = async (app: FastifyInstance)
         ok: true,
         data: { sessionId, flowId: sessionId, conflicts },
       } satisfies ApiResponse<{ sessionId: string; flowId: string; conflicts: typeof conflicts }>);
+    } catch (err) {
+      return handle(err, reply);
+    }
+  });
+
+  // ---------- POST /onboarding/transcribe ----------
+  // STT only — returns the transcript so the client can show it in the input
+  // before the user sends. No session state, no LLM, no bus.
+  app.post('/onboarding/transcribe', async (request, reply) => {
+    const parsed = TranscribeBody.safeParse(request.body);
+    if (!parsed.success) return bad(reply, parsed.error.issues);
+    try {
+      await requireUserId(request);
+      const { audioBase64, language } = parsed.data;
+      const stt = await sttTranscribe({
+        audioBase64,
+        language: sttLangFor(language),
+      });
+      return reply.send({
+        ok: true,
+        data: {
+          transcript: stt.transcript,
+          confidence: stt.confidence,
+          language_detected: stt.language_detected,
+          lowConfidence: stt.lowConfidence,
+          stub: stt.stub,
+        },
+      } satisfies ApiResponse<{
+        transcript: string;
+        confidence: number;
+        language_detected: string;
+        lowConfidence: boolean;
+        stub: boolean;
+      }>);
     } catch (err) {
       return handle(err, reply);
     }

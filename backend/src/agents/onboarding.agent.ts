@@ -167,13 +167,10 @@ export async function runOnboardingTurn(
       prompt,
       systemInstruction: systemPrompt,
       temperature: 0.4,
-      // Layer-1 fires ~8 sequential turns per signup. Pro's per-turn 429s
-      // (visible as "gemini primary attempt failed" warns on Railway) added
-      // 600-1200ms of backoff to every retry; Flash on the same prompt lands
-      // in 1-3s without retry pressure and the JSON extraction is well within
-      // Flash's range. Wali brief + moderator final synthesis remain on Pro
-      // where Urdu/narrative quality is non-negotiable.
-      modelTier: 'flash',
+      // Session 7 user pref: back to Pro for higher chat-reply quality
+      // (especially Urdu/Roman Urdu). Quota raised; the burst cascade risk
+      // is accepted in exchange for less chip-fallback during the demo.
+      modelTier: 'pro',
       maxOutputTokens: 4096,
       responseFormat: 'json',
     },

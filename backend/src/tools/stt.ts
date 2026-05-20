@@ -51,7 +51,6 @@ type RecognizeRequest = {
     alternativeLanguageCodes?: string[];
     enableAutomaticPunctuation?: boolean;
     audioChannelCount?: number;
-    model?: string;
   };
 };
 
@@ -140,7 +139,11 @@ async function attemptStt(input: SttInput): Promise<SttResult> {
     alternativeLanguageCodes: alternativeLangs,
     enableAutomaticPunctuation: true,
     audioChannelCount: 1,
-    model: 'latest_short',
+    // No `model` set → Google picks the default for the language. `latest_short`
+    // and `latest_long` are English-/major-language-only; setting either for
+    // ur-PK returns "Invalid recognition 'config': The requested model is
+    // currently not supported for language : ur-PK." (verified in Railway
+    // logs). Default model supports ur-PK + en-US fine.
   };
   if (sampleRateHertz > 0) config.sampleRateHertz = sampleRateHertz;
 

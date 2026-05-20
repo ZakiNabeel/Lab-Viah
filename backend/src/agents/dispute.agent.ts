@@ -138,13 +138,10 @@ export async function runDisputeAgent(
     const gem = await geminiCall(
       {
         prompt: buildDisputePrompt(promptArgs),
-        // Downgraded from Pro to Flash for demo-day Pro-quota relief.
-        // Dispute resolution is fired rarely (post-meeting incidents only) but
-        // when it lands during a demo it was inheriting the same "gemini
-        // primary attempt failed" stack as the booking wali brief — both
-        // chasing the same Pro quota. Flash produces equivalent structured
-        // resolution JSON; narrative quality is good-enough for the trace UI.
-        modelTier: 'flash',
+        // Session 7 user pref: switch all agents back to Pro for narrative
+        // quality. Quota has been increased; the burst-cascade risk is
+        // accepted in exchange for richer JSON + better Urdu.
+        modelTier: 'pro',
         temperature: 0.3,
         maxOutputTokens: 2400,
         responseFormat: 'json',

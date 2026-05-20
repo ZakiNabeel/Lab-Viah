@@ -110,6 +110,7 @@ export async function runDebate(
   input: ModeratorInput,
   bus: TraceBus
 ): Promise<ModeratorOutput> {
+  const candidateId = input.candidateId;
   const start = Date.now();
   const userName = input.userSpec.identity.name;
   const candName = input.candidateSpec.identity.name;
@@ -164,6 +165,7 @@ export async function runDebate(
       dim,
       userSpec: input.userSpec,
       candidateSpec: input.candidateSpec,
+      candidateId,
       bus,
     });
 
@@ -246,6 +248,9 @@ type ScoreOneInput = {
   dim: Dimension;
   userSpec: TwinSpec;
   candidateSpec: TwinSpec;
+  // Stamped onto agent.message events so the chat replay UI can pick this
+  // debate's transcript out of the interleaved 5-debate stream.
+  candidateId: string;
   bus: TraceBus;
 };
 
@@ -257,7 +262,7 @@ type ScoreOneOutput = {
 };
 
 async function scoreOneDimension(input: ScoreOneInput): Promise<ScoreOneOutput> {
-  const { dim, userSpec, candidateSpec, bus } = input;
+  const { dim, userSpec, candidateSpec, candidateId, bus } = input;
   const userName = userSpec.identity.name;
   const candName = candidateSpec.identity.name;
 
@@ -283,7 +288,10 @@ async function scoreOneDimension(input: ScoreOneInput): Promise<ScoreOneOutput> 
         temperature: DEBATE_TEMPERATURE,
         maxOutputTokens: DEBATE_MAX_TOKENS,
         responseFormat: 'json',
-        modelTier: 'flash',
+        // Session 7 user pref: Pro for richer per-dim debate turns.
+        // Each dim is ONE call (unified per-dim flow), so 5 debates × 8 dims
+        // = 40 calls per workplan — well within the raised quota.
+        modelTier: 'pro',
       },
       bus
     );
@@ -338,6 +346,7 @@ async function scoreOneDimension(input: ScoreOneInput): Promise<ScoreOneOutput> 
     type: 'agent.message',
     agent: 'user_twin',
     content: formatTurnTranscript(dim, userName, parsed.user_statement),
+    candidateId,
     ts: Date.now(),
   });
 
@@ -346,6 +355,7 @@ async function scoreOneDimension(input: ScoreOneInput): Promise<ScoreOneOutput> 
     type: 'agent.message',
     agent: 'candidate_twin',
     content: formatTurnTranscript(dim, candName, parsed.candidate_statement),
+    candidateId,
     ts: Date.now(),
   });
 

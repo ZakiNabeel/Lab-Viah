@@ -95,11 +95,9 @@ export async function runTwinTurn(
         temperature: PER_TURN_TEMPERATURE,
         maxOutputTokens: PER_TURN_MAX_TOKENS,
         responseFormat: 'json',
-        // Per MASTERPLAN §8.2: "downgrade to Flash for non-Moderator agents"
-        // when latency matters. Twin turns are voice-not-judgement, Flash
-        // handles them well and we avoid Pro's thinking-token tax + the
-        // parallel-rate-limit pressure of 10 simultaneous Pro calls per dim.
-        modelTier: 'flash',
+        // Session 7 user pref: Pro everywhere for higher debate narrative
+        // quality. Quota raised; per-turn latency hit accepted.
+        modelTier: 'pro',
       },
       bus
     );

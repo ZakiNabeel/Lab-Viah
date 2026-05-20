@@ -42,7 +42,17 @@ export type TraceEvent =
     }
   | { type: 'tool.call'; tool: string; args: unknown; ts: number }
   | { type: 'tool.result'; tool: string; result: unknown; latency_ms: number; ts: number }
-  | { type: 'agent.message'; agent: string; content: string; ts: number }
+  | {
+      type: 'agent.message';
+      agent: string;
+      content: string;
+      // Set when the message originated from a per-candidate debate. Lets the
+      // chat-replay UI pick THIS candidate's transcript out of the interleaved
+      // 5-debate stream (without it, user_twin appears 5× per dim because the
+      // user is user_twin in every debate).
+      candidateId?: string;
+      ts: number;
+    }
   | {
       type: 'dimension.scored';
       dimension: Dimension;
