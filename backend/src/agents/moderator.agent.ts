@@ -59,13 +59,14 @@ const CombinedDebateSchema = z.object({
   friction_level: z.enum(['none', 'low', 'medium', 'high', 'dealbreaker']),
 });
 
-// Loosened from .length(3) to .min(1).max(3) to survive Pro truncation —
-// jsonRepair can close arrays but can't synthesize missing items, so a
-// truncated 2-item array used to fail schema entirely. Post-process pads to 3
-// with deterministic fillers drawn from the per-dim scores (see padTo3).
+// Loosened further (Session 7 hotfix N): .min(0) so even a fully-empty array
+// from Pro passes schema, then padTo3 fills from deterministic fallbacks. Was
+// .min(1) — Pro under truncation was returning `{top_strengths:[], top_friction_points:[]}`
+// which made the empty array fail validation. Better to accept any shape and
+// fix it in post than fall all the way through to fallbackHighlights.
 const SynthesisSchema = z.object({
-  top_strengths: z.array(z.string().min(1).max(160)).min(1).max(3),
-  top_friction_points: z.array(z.string().min(1).max(160)).min(1).max(3),
+  top_strengths: z.array(z.string().min(1).max(160)).min(0).max(3),
+  top_friction_points: z.array(z.string().min(1).max(160)).min(0).max(3),
 });
 
 // =========================================================
@@ -157,18 +158,14 @@ export async function runDebate(
       break;
     }
 
-    if (earlyTerminated) {
-      // Short-circuit after a confirmed dealbreaker: fill remaining dims as
-      // neutral so the trace stays well-formed. We still emit dimension.scored
-      // for observability.
-      perDim[dim] = {
-        score: 0.5,
-        evidence: 'Skipped after a verified dealbreaker hit earlier in the debate.',
-        friction_level: 'medium',
-      };
-      emitDimScored(bus, dim, perDim[dim]);
-      continue;
-    }
+    // Session 7 demo-mode hotfix: early-termination after confirmed dealbreaker
+    // was disabled. Was: when one dim flagged + Moderator agreed, all 7
+    // remaining dims auto-filled as 0.5 + "Skipped after a verified
+    // dealbreaker hit earlier in the debate" — making the report look
+    // half-empty. For the demo we always run all 8 dims so the user sees the
+    // full picture; the verdict is already forced to not_recommended by the
+    // dealbreaker, no functional change.
+    void earlyTerminated;
 
     const dimResult = await scoreOneDimension({
       dim,
